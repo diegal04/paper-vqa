@@ -26,8 +26,12 @@ def main(config: DictConfig) -> None:
     if not checkpoint_path:
         raise ValueError("Set evaluation.checkpoint_path to a checkpoint directory")
     seed_everything(int(trainer_config["seed"]), bool(trainer_config["deterministic"]))
-    processor = build_processor(str(values["model"]["name"]))
-    loaders = VQADataModule(values["data"], values["replay"], processor, trainer_config).build()
+    processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
+    loaders = VQADataModule(values["data"], values["replay"], processor, trainer_config).build(
+        include_test=True
+    )
+    if not loaders.test_examples:
+        raise ValueError("frozen test evaluation requires a non-empty test partition")
     output_directory = Path(str(trainer_config["output_dir"])).parent
     write_manifests(loaders.manifests, output_directory)
     model = build_vqa_model(values["model"], values["head"])

@@ -1,11 +1,11 @@
-# Replace path/image_root with the official VizWiz annotations and image directories.
+include_test: false
 train:
   name: vizwiz
-  backend: local_json
-  path: data/vizwiz/train.json
+  backend: huggingface
+  path: Multimodal-Fatima/VizWiz_train
   split: train
-  revision: "official-2023-01-10"
-  image_root: data/vizwiz/train
+  revision: 0398414ffdf6ca445b9e90204ce5d0def5d73da2
+  image_root: null
   max_samples: null
   seed: ${trainer.seed}
   weight: 1.0
@@ -13,14 +13,14 @@ train:
   answers_field: answers
   answerable_field: answerable
   image_field: image
-  id_field: image
+  id_field: filename
 validation:
   name: vizwiz
-  backend: local_json
-  path: data/vizwiz/val.json
+  backend: huggingface
+  path: Multimodal-Fatima/VizWiz_validation
   split: validation
-  revision: "official-2023-01-10"
-  image_root: data/vizwiz/val
+  revision: 54b3cc446d5138b72ca1b3539bc64fd1848cff70
+  image_root: null
   max_samples: null
   seed: ${trainer.seed}
   weight: 1.0
@@ -28,14 +28,15 @@ validation:
   answers_field: answers
   answerable_field: answerable
   image_field: image
-  id_field: image
+  id_field: filename
 test:
   name: vizwiz
-  backend: local_json
-  path: data/vizwiz/test.json
+  backend: huggingface_with_annotations
+  path: Multimodal-Fatima/VizWiz_test
+  annotations_path: data/vizwiz/VQA_test.json
   split: test
-  revision: "official-2023-01-10"
-  image_root: data/vizwiz/test
+  revision: 6de3ff2103743051521ac6cc001025a9b399a1f1
+  image_root: null
   max_samples: null
   seed: ${trainer.seed}
   weight: 1.0
@@ -43,4 +44,5 @@ test:
   answers_field: answers
   answerable_field: answerable
   image_field: image
-  id_field: image
+  id_field: filename
+  annotation_id_field: image

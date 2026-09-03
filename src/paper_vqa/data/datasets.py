@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,8 +29,23 @@ def _answer_texts(value: Any) -> tuple[str, ...]:
     return tuple(answers)
 
 
+@dataclass(frozen=True, slots=True)
+class HuggingFaceImageReference:
+    """Lazy pointer to one image in a Hugging Face dataset row."""
+
+    dataset: Any
+    index: int
+    image_field: str
+
+    def load(self) -> Any:
+        """Decode the image only when a DataLoader requests this sample."""
+        return self.dataset[self.index][self.image_field]
+
+
 def load_rgb_image(value: Any) -> Image.Image:
     """Open paths and normalise a supported image object to RGB."""
+    if isinstance(value, HuggingFaceImageReference):
+        return load_rgb_image(value.load())
     if isinstance(value, (str, Path)):
         with Image.open(value) as opened:
             return opened.convert("RGB")
@@ -110,13 +126,121 @@ class HuggingFaceVQAAdapter(VQAAdapter):
             split=self.config.split,
             revision=self.config.revision,
         )
-        rows: Iterable[Mapping[str, Any]] = dataset
+        rows = self._text_rows(dataset)
         examples = [
             example
             for index, row in enumerate(rows)
-            if (example := self._to_example(row, index)) is not None
+            if (example := self._to_example(self._with_lazy_image(row, dataset, index), index))
+            is not None
         ]
         return self._sample(examples)
+
+    def _text_rows(self, dataset: Any) -> Iterable[Mapping[str, Any]]:
+        """Expose only metadata columns so manifest creation never decodes images."""
+        fields = [self.config.question_field, self.config.answers_field]
+        if self.config.answerable_field is not None:
+            fields.append(self.config.answerable_field)
+        if self.config.id_field is not None:
+            fields.append(self.config.id_field)
+        unique_fields = list(dict.fromkeys(fields))
+        if hasattr(dataset, "column_names"):
+            missing = set(unique_fields).difference(dataset.column_names)
+            if missing:
+                raise ValueError(f"hosted source is missing required columns: {sorted(missing)}")
+        if hasattr(dataset, "select_columns"):
+            return cast(Iterable[Mapping[str, Any]], dataset.select_columns(unique_fields))
+        return ({field: row.get(field) for field in unique_fields} for row in dataset)
+
+    def _with_lazy_image(self, row: Mapping[str, Any], dataset: Any, index: int) -> dict[str, Any]:
+        """Attach a lazy image pointer to an otherwise text-only hosted row."""
+        enriched = dict(row)
+        enriched[self.config.image_field] = HuggingFaceImageReference(
+            dataset=dataset,
+            index=index,
+            image_field=self.config.image_field,
+        )
+        return enriched
+
+
+class HuggingFaceWithAnnotationsVQAAdapter(HuggingFaceVQAAdapter):
+    """Join Hugging Face images/questions with official local benchmark annotations."""
+
+    def load(self) -> list[VQAExample]:
+        """Load rows and replace unlabelled hosted test fields with official labels.
+
+        Raises:
+            ValueError: If the hosted and official releases do not have identical IDs.
+        """
+        from datasets import load_dataset
+
+        annotations = self._annotation_index()
+        dataset = load_dataset(
+            self.config.path,
+            split=self.config.split,
+            revision=self.config.revision,
+        )
+        source_ids: set[str] = set()
+        examples: list[VQAExample] = []
+        for index, raw_row in enumerate(self._text_rows(dataset)):
+            row = self._with_lazy_image(raw_row, dataset, index)
+            source_id = self._source_id(row, index)
+            if source_id in source_ids:
+                raise ValueError(f"duplicate hosted sample ID: {source_id}")
+            source_ids.add(source_id)
+            annotation = annotations.get(source_id)
+            if annotation is None:
+                raise ValueError(f"missing official annotation for hosted sample: {source_id}")
+            official_question = str(annotation.get(self.config.question_field, "")).strip()
+            if (
+                official_question
+                and official_question != str(row.get(self.config.question_field, "")).strip()
+            ):
+                raise ValueError(f"question mismatch for sample: {source_id}")
+            row[self.config.answers_field] = annotation.get(self.config.answers_field, ())
+            if self.config.answerable_field is not None:
+                row[self.config.answerable_field] = annotation.get(self.config.answerable_field)
+            example = self._to_example(row, index)
+            if example is None:
+                raise ValueError(f"incomplete official annotation for sample: {source_id}")
+            examples.append(example)
+        extra_annotations = set(annotations).difference(source_ids)
+        if extra_annotations:
+            raise ValueError(
+                "official annotations contain "
+                f"{len(extra_annotations)} IDs absent from hosted source"
+            )
+        return self._sample(examples)
+
+    def _annotation_index(self) -> dict[str, Mapping[str, Any]]:
+        """Read official JSON and index annotations by the configured image ID."""
+        if self.config.annotations_path is None:
+            raise ValueError("annotations_path is required")
+        payload = json.loads(self.config.annotations_path.read_text(encoding="utf-8"))
+        rows: Sequence[Mapping[str, Any]]
+        if isinstance(payload, Mapping):
+            rows = payload.get("annotations", payload.get("data", []))
+        else:
+            rows = payload
+        index: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            identifier = str(row.get(self.config.annotation_id_field, ""))
+            if not identifier:
+                raise ValueError("official annotation has no image identifier")
+            if identifier in index:
+                raise ValueError(f"duplicate official annotation ID: {identifier}")
+            index[identifier] = row
+        if not index:
+            raise ValueError("official annotation file has no records")
+        return index
+
+    def _source_id(self, row: Mapping[str, Any], position: int) -> str:
+        """Extract the explicit hosted filename/ID used to join annotations."""
+        if self.config.id_field is None:
+            raise ValueError("hybrid adapter requires id_field")
+        identifier = row.get(self.config.id_field)
+        if identifier is None:
+            raise ValueError(f"hosted row {position} has no {self.config.id_field!r}")
+        return str(identifier)
 
 
 class LocalJsonVQAAdapter(VQAAdapter):
@@ -163,6 +287,8 @@ def build_adapter(config: SourceConfig) -> VQAAdapter:
     """
     if config.backend == "huggingface":
         return HuggingFaceVQAAdapter(config)
+    if config.backend == "huggingface_with_annotations":
+        return HuggingFaceWithAnnotationsVQAAdapter(config)
     if config.backend == "local_json":
         return LocalJsonVQAAdapter(config)
     raise ValueError(f"Unsupported dataset backend: {config.backend}")

@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-
-BackendName = Literal["huggingface", "local_json"]
+BackendName = Literal["huggingface", "local_json", "huggingface_with_annotations"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +14,7 @@ class SourceConfig:
     name: str
     backend: BackendName
     path: str
+    annotations_path: Path | None
     split: str
     revision: str | None
     image_root: Path | None
@@ -26,6 +26,7 @@ class SourceConfig:
     answerable_field: str | None = "answerable"
     image_field: str = "image"
     id_field: str | None = None
+    annotation_id_field: str = "image"
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any]) -> "SourceConfig":
@@ -45,12 +46,16 @@ class SourceConfig:
         if weight <= 0:
             raise ValueError("source weight must be positive")
         backend = str(mapping["backend"])
-        if backend not in {"huggingface", "local_json"}:
+        if backend not in {"huggingface", "local_json", "huggingface_with_annotations"}:
             raise ValueError(f"unsupported backend: {backend}")
+        annotations_path = mapping.get("annotations_path")
+        if backend == "huggingface_with_annotations" and not annotations_path:
+            raise ValueError("huggingface_with_annotations requires annotations_path")
         return cls(
             name=str(mapping["name"]),
             backend=cast(BackendName, backend),
             path=str(mapping["path"]),
+            annotations_path=Path(annotations_path) if annotations_path else None,
             split=str(mapping["split"]),
             revision=mapping.get("revision"),
             image_root=Path(image_root) if image_root else None,
@@ -62,6 +67,7 @@ class SourceConfig:
             answerable_field=mapping.get("answerable_field", "answerable"),
             image_field=str(mapping.get("image_field", "image")),
             id_field=mapping.get("id_field"),
+            annotation_id_field=str(mapping.get("annotation_id_field", "image")),
         )
 
 

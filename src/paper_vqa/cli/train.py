@@ -24,7 +24,7 @@ def main(config: DictConfig) -> None:
     trainer_config = values["trainer"]
     trainer_config["device"] = resolve_device(str(trainer_config["device"]))
     seed_everything(int(trainer_config["seed"]), bool(trainer_config["deterministic"]))
-    processor = build_processor(str(values["model"]["name"]))
+    processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
     datamodule = VQADataModule(values["data"], values["replay"], processor, trainer_config)
     loaders = datamodule.build()
     output_directory = Path(str(trainer_config["output_dir"])).parent

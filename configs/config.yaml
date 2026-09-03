@@ -1,5 +1,7 @@
 defaults:
   - data: vizwiz
+  - audit: default
+  - baseline: default
   - replay: none
   - model: blip_vqa_base
   - head: mlp

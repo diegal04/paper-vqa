@@ -19,7 +19,19 @@ Las respuestas de referencia se conservan completas; la métrica VQA usa el prot
 uv sync --extra dev
 ```
 
-Descarga las anotaciones e imágenes oficiales de VizWiz y configura sus rutas en `configs/data/vizwiz.yaml`. Los valores de `path`, `image_root`, revisión, muestras máximas, pesos, *splits*, longitudes, optimización y métricas viven en YAML: no hay tamaños de dataset o hiperparámetros escondidos en Python.
+El proyecto fija PyTorch 2.6.0 y Torchvision 0.21.0 desde el índice oficial
+CUDA 12.4. Es compatible con el driver NVIDIA local que expone CUDA 12.4; no
+uses la rueda CUDA 13 que instalaría PyPI por defecto.
+
+Train y validation se cargan desde las copias de Hugging Face de Multimodal-Fatima. Para test, descarga una vez las anotaciones oficiales recién publicadas:
+
+```bash
+curl --fail --location --create-dirs \
+  --output data/vizwiz/VQA_test.json \
+  https://vizwiz.cs.colorado.edu/VizWiz_all_answers/VQA_test.json
+```
+
+El adaptador híbrido une ese JSON por `filename` a las imágenes/preguntas de `Multimodal-Fatima/VizWiz_test`. Los valores de fuentes, revisiones, muestras máximas, pesos, *splits*, longitudes, optimización y métricas viven en YAML: no hay tamaños de dataset o hiperparámetros escondidos en Python.
 
 ## Ejecución
 
@@ -29,11 +41,39 @@ Una comprobación de datos y manifiestos:
 uv run paper-vqa-prepare-data
 ```
 
+Una auditoría descriptiva reproducible de los tres *splits* (respondibilidad,
+referencias, longitudes de texto y una muestra de imágenes decodificadas):
+
+```bash
+uv run paper-vqa-audit-data
+```
+
+El informe `data_audit.json` y los manifiestos quedan en el directorio de salida
+de Hydra. Para no abrir imágenes de test durante una auditoría de desarrollo,
+usa `audit.include_test=false`.
+
+Por defecto esto solo valida train y validation. La comprobación explícita de test —que descarga sus imágenes desde Hugging Face— es:
+
+```bash
+uv run paper-vqa-prepare-data data.include_test=true
+```
+
 Una ejecución de desarrollo con una semilla:
 
 ```bash
 uv run paper-vqa-train
 ```
+
+El baseline preentrenado, sin LoRA ni cabeza y exclusivamente en validation,
+se ejecuta primero como prueba corta y después completo:
+
+```bash
+uv run paper-vqa-baseline model=blip_vqa_zero_shot head=disabled \
+  experiment=baseline_smoke baseline.max_samples=20
+uv run paper-vqa-baseline model=blip_vqa_zero_shot head=disabled experiment=baseline
+```
+
+El comando rechaza explícitamente LoRA, la cabeza auxiliar y el split test.
 
 Ablación sin cabeza, sin cambiar código:
 

@@ -1,0 +1,2 @@
+name: baseline_smoke
+description: Short zero-shot BLIP-VQA inference check on VizWiz validation; not paper-reported.

@@ -47,11 +47,18 @@ class VQADataModule:
         self.processor = processor
         self.trainer_config = trainer_config
 
-    def build(self) -> DataLoaders:
-        """Load all configured partitions and create deterministic loaders."""
+    def build(self, include_test: bool = False) -> DataLoaders:
+        """Load train/validation and optionally frozen test partitions.
+
+        Args:
+            include_test: Load test only for final evaluation or explicit auditing.
+        """
         train_examples, train_manifest = self._load_source(self.data_config["train"])
         validation_examples, validation_manifest = self._load_source(self.data_config["validation"])
-        test_examples, test_manifest = self._load_source(self.data_config["test"])
+        test_examples: list[VQAExample] = []
+        test_manifest: DatasetManifest | None = None
+        if include_test:
+            test_examples, test_manifest = self._load_source(self.data_config["test"])
         replay_examples: list[VQAExample] = []
         replay_manifests: list[DatasetManifest] = []
         source_sizes_and_weights: list[tuple[int, float]] = [
@@ -63,12 +70,10 @@ class VQADataModule:
                 replay_examples.extend(examples)
                 replay_manifests.append(manifest)
                 source_sizes_and_weights.append((len(examples), float(source.get("weight", 1.0))))
-        assert_disjoint_manifests(
-            train_manifest,
-            validation_manifest,
-            test_manifest,
-            *replay_manifests,
-        )
+        manifests_to_check = [train_manifest, validation_manifest, *replay_manifests]
+        if test_manifest is not None:
+            manifests_to_check.append(test_manifest)
+        assert_disjoint_manifests(*manifests_to_check)
         all_train = tuple(train_examples + replay_examples)
         train_dataset = self._dataset(all_train)
         validation_dataset = self._dataset(validation_examples)
@@ -103,7 +108,7 @@ class VQADataModule:
             train_examples=all_train,
             validation_examples=tuple(validation_examples),
             test_examples=tuple(test_examples),
-            manifests=(train_manifest, validation_manifest, test_manifest, *replay_manifests),
+            manifests=tuple(manifests_to_check),
         )
 
     def _load_source(self, mapping: Mapping[str, Any]) -> tuple[list[VQAExample], DatasetManifest]:

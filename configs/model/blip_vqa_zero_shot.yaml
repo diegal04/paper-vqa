@@ -1,7 +1,7 @@
 name: Salesforce/blip-vqa-base
 revision: 787b3d35d57e49572baabd22884b3d5a05acf072
 lora:
-  enabled: true
+  enabled: false
   rank: 8
   alpha: 16
   dropout: 0.05

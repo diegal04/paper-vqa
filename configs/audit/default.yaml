@@ -1,0 +1,6 @@
+include_test: true
+seed: ${trainer.seed}
+preview_count: 5
+image_sample_count: 5
+top_answer_count: 10
+report_filename: data_audit.json

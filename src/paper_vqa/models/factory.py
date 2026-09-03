@@ -22,7 +22,14 @@ def build_vqa_model(
     from peft import LoraConfig, get_peft_model
     from transformers import BlipForQuestionAnswering
 
-    blip: Any = BlipForQuestionAnswering.from_pretrained(model_config["name"])
+    revision = model_config.get("revision")
+    blip: Any
+    if revision:
+        blip = BlipForQuestionAnswering.from_pretrained(
+            model_config["name"], revision=str(revision)
+        )
+    else:
+        blip = BlipForQuestionAnswering.from_pretrained(model_config["name"])
     lora = model_config["lora"]
     if bool(lora["enabled"]):
         blip = get_peft_model(
@@ -50,8 +57,17 @@ def build_vqa_model(
     return SelectiveVQAModel(blip, head)
 
 
-def build_processor(model_name: str) -> Any:
-    """Load the matching BLIP processor at the configured model revision."""
+def build_processor(model_name: str, revision: str | None = None) -> Any:
+    """Load the matching BLIP processor at an optional immutable revision.
+
+    Args:
+        model_name: Identifier of the BLIP checkpoint.
+        revision: Optional immutable Hugging Face revision of that checkpoint.
+    """
     from transformers import BlipProcessor
 
-    return BlipProcessor.from_pretrained(model_name)
+    return (
+        BlipProcessor.from_pretrained(model_name, revision=revision)
+        if revision
+        else BlipProcessor.from_pretrained(model_name)
+    )
