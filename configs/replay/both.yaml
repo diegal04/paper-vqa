@@ -1,0 +1,32 @@
+enabled: true
+sampling: source_weighted
+samples_per_epoch: null
+sources:
+  - name: textvqa
+    backend: huggingface
+    path: lmms-lab/textvqa
+    split: train
+    revision: null
+    image_root: null
+    max_samples: null
+    seed: ${trainer.seed}
+    weight: 1.0
+    question_field: question
+    answers_field: answers
+    answerable_field: null
+    image_field: image
+    id_field: image_id
+  - name: vqav2
+    backend: huggingface
+    path: lmms-lab/VQAv2
+    split: train
+    revision: null
+    image_root: null
+    max_samples: null
+    seed: ${trainer.seed}
+    weight: 1.0
+    question_field: question
+    answers_field: answers
+    answerable_field: null
+    image_field: image
+    id_field: question_id

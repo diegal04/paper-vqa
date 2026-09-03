@@ -1,0 +1,46 @@
+# Replace path/image_root with the official VizWiz annotations and image directories.
+train:
+  name: vizwiz
+  backend: local_json
+  path: data/vizwiz/train.json
+  split: train
+  revision: "official-2023-01-10"
+  image_root: data/vizwiz/train
+  max_samples: null
+  seed: ${trainer.seed}
+  weight: 1.0
+  question_field: question
+  answers_field: answers
+  answerable_field: answerable
+  image_field: image
+  id_field: image
+validation:
+  name: vizwiz
+  backend: local_json
+  path: data/vizwiz/val.json
+  split: validation
+  revision: "official-2023-01-10"
+  image_root: data/vizwiz/val
+  max_samples: null
+  seed: ${trainer.seed}
+  weight: 1.0
+  question_field: question
+  answers_field: answers
+  answerable_field: answerable
+  image_field: image
+  id_field: image
+test:
+  name: vizwiz
+  backend: local_json
+  path: data/vizwiz/test.json
+  split: test
+  revision: "official-2023-01-10"
+  image_root: data/vizwiz/test
+  max_samples: null
+  seed: ${trainer.seed}
+  weight: 1.0
+  question_field: question
+  answers_field: answers
+  answerable_field: answerable
+  image_field: image
+  id_field: image

@@ -1,0 +1,9 @@
+checkpoint_path: null
+threshold: null
+minimum_answerable_recall: 0.90
+ece_bins: 15
+bootstrap_samples: 1000
+bootstrap_confidence: 0.95
+generation:
+  max_new_tokens: 10
+  num_beams: 5

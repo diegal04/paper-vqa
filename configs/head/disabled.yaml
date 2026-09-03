@@ -1,0 +1,4 @@
+enabled: false
+hidden_dim: 256
+dropout: 0.30
+pooling: masked_mean

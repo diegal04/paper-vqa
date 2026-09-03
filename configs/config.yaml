@@ -1,0 +1,20 @@
+defaults:
+  - data: vizwiz
+  - replay: none
+  - model: blip_vqa_base
+  - head: mlp
+  - loss: multitask
+  - trainer: default
+  - evaluation: default
+  - logging: wandb
+  - experiment: debug
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}/seed_${trainer.seed}
+  sweep:
+    dir: multirun/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: seed_${trainer.seed}
+  job:
+    chdir: false

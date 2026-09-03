@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Experiment artefacts and local benchmark data
+/data/
+outputs/
+multirun/
+wandb/

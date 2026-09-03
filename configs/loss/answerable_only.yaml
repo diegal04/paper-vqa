@@ -1,0 +1,3 @@
+answerability_weight: 0.25
+vqa_loss_policy: answerable_only
+answerability_class_weights: null

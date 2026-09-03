@@ -1,0 +1,7 @@
+name: Salesforce/blip-vqa-base
+lora:
+  enabled: true
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [query, value]
