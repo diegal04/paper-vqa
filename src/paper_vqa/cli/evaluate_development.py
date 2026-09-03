@@ -10,6 +10,7 @@ from paper_vqa.cli.common import resolve_device, resolved_config, write_manifest
 from paper_vqa.cli.paths import config_directory
 from paper_vqa.data.datasets import build_adapter
 from paper_vqa.data.records import SourceConfig, VQAExample
+from paper_vqa.evaluation.metrics import select_safety_threshold
 from paper_vqa.evaluation.runner import Evaluator, write_evaluation
 from paper_vqa.models.factory import build_processor, build_vqa_model
 from paper_vqa.training.checkpoints import CheckpointManager
@@ -43,6 +44,11 @@ def main(config: DictConfig) -> None:
         progress_leave=bool(progress.get("leave", False)),
     )
     threshold = _threshold(values["development"], model.answerability_head is not None)
+    if threshold is None:
+        labels, scores = evaluator.calibration_scores_examples(examples)
+        threshold = select_safety_threshold(
+            labels, scores, float(values["evaluation"]["minimum_answerable_recall"])
+        ).threshold
     result, predictions = evaluator.evaluate_examples(
         examples,
         threshold,
@@ -83,21 +89,22 @@ def _load_validation_examples(
     return build_adapter(SourceConfig.from_mapping(source)).manifest()
 
 
-def _threshold(development_config: dict[str, Any], has_head: bool) -> float:
-    """Resolve a development threshold without silently calibrating on test.
+def _threshold(development_config: dict[str, Any], has_head: bool) -> float | None:
+    """Resolve a configured threshold or request validation-only calibration.
 
     Args:
         development_config: Configured fixed threshold, if any.
         has_head: Whether the checkpoint contains an answerability head.
 
     Returns:
-        Zero for VQA-only models or the configured fixed threshold for a head.
+        Zero for VQA-only models, a configured fixed threshold, or ``None``
+        when an answerability head must be calibrated on validation.
     """
     if not has_head:
         return 0.0
     value = development_config.get("threshold")
     if value is None:
-        raise ValueError("development.threshold is required when head.enabled=true")
+        return None
     threshold = float(value)
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("development.threshold must be in [0, 1]")

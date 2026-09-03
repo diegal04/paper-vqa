@@ -90,6 +90,53 @@ class Evaluator:
         return labels, scores
 
     @torch.no_grad()
+    def calibration_scores_examples(
+        self, examples: Sequence[VQAExample]
+    ) -> tuple[list[int], list[float]]:
+        """Collect labelled answerability scores from development examples.
+
+        This path is intentionally independent of the training data loader.  It
+        permits calibration on a validation-only sequence before selective VQA
+        inference is run over that same development partition.
+
+        Args:
+            examples: Labelled development examples used solely for calibration.
+
+        Returns:
+            Binary answerability labels and their predicted answerable
+            probabilities, in matching order.  Empty lists are returned when
+            the model has no answerability head.
+        """
+        if self.model.answerability_head is None:
+            return [], []
+        labels: list[int] = []
+        scores: list[float] = []
+        for example in tqdm(
+            examples,
+            desc="Calibrating validation",
+            total=len(examples),
+            disable=not self.progress_enabled,
+            leave=self.progress_leave,
+        ):
+            if example.answerable is None:
+                continue
+            inputs = self.processor(
+                images=load_rgb_image(example.image),
+                text=example.question,
+                return_tensors="pt",
+            ).to(self.device)
+            output = self.model(
+                pixel_values=inputs.pixel_values,
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                labels=None,
+            )
+            assert output.answerability_probabilities is not None
+            labels.append(int(example.answerable))
+            scores.append(float(output.answerability_probabilities[0, 1].item()))
+        return labels, scores
+
+    @torch.no_grad()
     def evaluate_examples(
         self,
         examples: Sequence[VQAExample],
