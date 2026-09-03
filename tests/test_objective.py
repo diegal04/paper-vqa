@@ -45,3 +45,33 @@ def test_answerable_only_vqa_loss_has_safe_zero_when_no_answerable_examples() ->
     result.total.backward()
 
     assert result.generation.item() == 0.0
+
+
+def test_vqa_loss_uses_next_token_alignment() -> None:
+    logits = torch.tensor(
+        [
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+            ]
+        ],
+        requires_grad=True,
+    )
+    logits.data[0, 0, 2] = 8.0
+    logits.data[0, 1, 3] = 8.0
+    labels = torch.tensor([[1, 2, 3]])
+    output = VQAForwardOutput(logits, None, None, None)
+    batch = {
+        "labels": labels,
+        "answerable": torch.tensor([1]),
+        "has_answerable": torch.tensor([True]),
+    }
+
+    result = MultitaskObjective(0.0, "all_examples")(output, batch)
+    expected = torch.nn.functional.cross_entropy(
+        logits[:, :-1].transpose(1, 2), labels[:, 1:], reduction="mean"
+    )
+
+    assert torch.allclose(result.generation, expected)
+    assert result.generation.item() < 0.01

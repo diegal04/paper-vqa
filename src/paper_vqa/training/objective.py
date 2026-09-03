@@ -73,21 +73,35 @@ class MultitaskObjective(nn.Module):
     def _generation_loss(
         self, output: VQAForwardOutput, labels: Tensor, answerable: Tensor
     ) -> Tensor:
-        """Compute per-example decoder loss to support the ablation policy."""
+        """Compute next-token decoder loss under the configured sample policy.
+
+        BLIP's decoder is autoregressive: logits at position ``t`` predict the
+        label at ``t + 1``. This explicit shift reproduces its native language
+        modelling objective while allowing unanswerable records to be excluded
+        for the ``answerable_only`` ablation.
+        """
         logits = output.generation_logits
         if logits is None or logits.shape[:2] != labels.shape:
             if self.vqa_loss_policy == "all_examples" and output.generation_loss is not None:
                 return output.generation_loss
             raise ValueError("generation logits and labels must share [batch, sequence] dimensions")
+        if labels.shape[1] < 2:
+            return logits.sum() * 0.0
         token_losses = functional.cross_entropy(
-            logits.transpose(1, 2), labels, ignore_index=-100, reduction="none"
+            logits[:, :-1].transpose(1, 2), labels[:, 1:], ignore_index=-100, reduction="none"
         )
-        token_counts = (labels != -100).sum(dim=1).clamp_min(1)
-        per_example = token_losses.sum(dim=1) / token_counts
+        valid_tokens = labels[:, 1:] != -100
         if self.vqa_loss_policy == "all_examples":
-            return per_example.mean()
+            count = valid_tokens.sum().clamp_min(1)
+            return token_losses.sum() / count
         mask = answerable.to(dtype=torch.bool)
-        return per_example[mask].mean() if bool(mask.any()) else per_example.sum() * 0.0
+        selected_tokens = valid_tokens[mask]
+        selected_losses = token_losses[mask]
+        return (
+            selected_losses.sum() / selected_tokens.sum().clamp_min(1)
+            if bool(mask.any())
+            else token_losses.sum() * 0.0
+        )
 
     def _answerability_loss(
         self,
