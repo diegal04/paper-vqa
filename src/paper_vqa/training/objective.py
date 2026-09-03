@@ -75,7 +75,7 @@ class MultitaskObjective(nn.Module):
     ) -> Tensor:
         """Compute per-example decoder loss to support the ablation policy."""
         logits = output.generation_logits
-        if logits.shape[:2] != labels.shape:
+        if logits is None or logits.shape[:2] != labels.shape:
             if self.vqa_loss_policy == "all_examples" and output.generation_loss is not None:
                 return output.generation_loss
             raise ValueError("generation logits and labels must share [batch, sequence] dimensions")

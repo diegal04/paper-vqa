@@ -13,7 +13,7 @@ from paper_vqa.models.answerability import AnswerabilityHead
 class VQAForwardOutput:
     """Typed model output consumed by the multitask objective."""
 
-    generation_logits: Tensor
+    generation_logits: Tensor | None
     generation_loss: Tensor | None
     answerability_logits: Tensor | None
     answerability_probabilities: Tensor | None
@@ -52,23 +52,29 @@ class SelectiveVQAModel(nn.Module):
         """Run generation and, when enabled, answerability classification."""
         response_logits: Tensor | None = None
         response_probabilities: Tensor | None = None
+        hidden_states: Tensor | None = None
         if self.answerability_head is not None:
             hidden_states = self._multimodal_hidden_states(pixel_values, input_ids, attention_mask)
             head_output = self.answerability_head(hidden_states, attention_mask)
             response_logits = head_output.logits
             response_probabilities = head_output.probabilities
-        decoder_ids = self._safe_decoder_input_ids(labels)
-        blip_output = self.blip_model(
+        if labels is None:
+            return VQAForwardOutput(
+                generation_logits=None,
+                generation_loss=None,
+                answerability_logits=response_logits,
+                answerability_probabilities=response_probabilities,
+            )
+        decoder_output = self._decoder_output(
             pixel_values=pixel_values,
             input_ids=input_ids,
             attention_mask=attention_mask,
-            decoder_input_ids=decoder_ids,
             labels=labels,
-            return_dict=True,
+            hidden_states=hidden_states,
         )
         return VQAForwardOutput(
-            generation_logits=blip_output.logits,
-            generation_loss=blip_output.loss,
+            generation_logits=cast(Tensor, decoder_output.logits),
+            generation_loss=cast(Tensor, decoder_output.loss).mean(),
             answerability_logits=response_logits,
             answerability_probabilities=response_probabilities,
         )
@@ -120,6 +126,46 @@ class SelectiveVQAModel(nn.Module):
             return_dict=True,
         )
         return cast(Tensor, text_outputs.last_hidden_state)
+
+    def _decoder_output(
+        self,
+        pixel_values: Tensor,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        labels: Tensor,
+        hidden_states: Tensor | None,
+    ) -> Any:
+        """Run BLIP's answer decoder with unreduced loss and token logits.
+
+        ``BlipForQuestionAnswering.forward`` intentionally returns only a mean
+        decoder loss. The training objective needs logits to choose whether VQA
+        loss applies to all examples or only answerable ones, so this mirrors
+        BLIP's internal vision-to-text path and calls its decoder directly.
+
+        Args:
+            pixel_values: Preprocessed image tensor.
+            input_ids: Tokenised question IDs.
+            attention_mask: Question-token mask.
+            labels: Padded answer IDs, with ignored positions set to ``-100``.
+            hidden_states: Reusable multimodal states computed for the head.
+
+        Returns:
+            BLIP decoder output containing per-token logits and an unreduced loss.
+        """
+        multimodal_states = (
+            hidden_states
+            if hidden_states is not None
+            else self._multimodal_hidden_states(pixel_values, input_ids, attention_mask)
+        )
+        decoder_ids = self._safe_decoder_input_ids(labels)
+        return self.blip_model.text_decoder(
+            input_ids=decoder_ids,
+            encoder_hidden_states=multimodal_states,
+            encoder_attention_mask=attention_mask,
+            labels=labels,
+            reduction="none",
+            return_dict=True,
+        )
 
     def _safe_decoder_input_ids(self, labels: Tensor | None) -> Tensor | None:
         """Replace ignored labels before decoder embedding lookup."""

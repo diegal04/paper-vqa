@@ -15,6 +15,7 @@ dependencies = [
     "scikit-learn>=1.5",
     "torch==2.6.0",
     "torchvision==0.21.0",
+    "tqdm>=4.67",
     "transformers>=4.48",
     "wandb>=0.19",
 ]
@@ -25,6 +26,7 @@ dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
     "ruff>=0.8",
+    "types-tqdm>=4.67",
 ]
 
 [project.scripts]
@@ -33,6 +35,7 @@ paper-vqa-evaluate = "paper_vqa.cli.evaluate:main"
 paper-vqa-prepare-data = "paper_vqa.cli.prepare_data:main"
 paper-vqa-audit-data = "paper_vqa.cli.audit_data:main"
 paper-vqa-baseline = "paper_vqa.cli.baseline:main"
+paper-vqa-evaluate-development = "paper_vqa.cli.evaluate_development:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]

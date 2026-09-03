@@ -75,6 +75,22 @@ uv run paper-vqa-baseline model=blip_vqa_zero_shot head=disabled experiment=base
 
 El comando rechaza explícitamente LoRA, la cabeza auxiliar y el split test.
 
+Para medir VQA Accuracy de un checkpoint durante desarrollo sin abrir test:
+
+```bash
+uv run paper-vqa-evaluate-development head=disabled \
+  evaluation.checkpoint_path=outputs/.../checkpoint \
+  experiment.name=lora_vqa_development
+```
+
+Este comando está restringido a `data.validation`; no calibra umbrales de una
+cabeza sin que se indique `development.threshold` de forma explícita.
+
+Los comandos de entrenamiento y evaluación muestran barras de progreso con
+porcentaje, velocidad, ETA y pérdida media. Puedes ocultarlas con
+`trainer.progress.enabled=false` o mantener las barras completadas con
+`trainer.progress.leave=true`.
+
 Ablación sin cabeza, sin cambiar código:
 
 ```bash

@@ -11,6 +11,7 @@ from sklearn.metrics import average_precision_score
 from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from paper_vqa.models.selective_vqa import SelectiveVQAModel
 from paper_vqa.training.checkpoints import CheckpointManager, CheckpointMetadata
@@ -91,10 +92,10 @@ class Trainer:
         best_metrics: dict[str, float] = {}
         for epoch in range(1, int(self.config["epochs"]) + 1):
             train_metrics, global_step = self._run_epoch(
-                train_loader, training=True, global_step=global_step
+                train_loader, training=True, global_step=global_step, epoch=epoch
             )
             validation_metrics, global_step = self._run_epoch(
-                validation_loader, training=False, global_step=global_step
+                validation_loader, training=False, global_step=global_step, epoch=epoch
             )
             combined = train_metrics.prefixed("train") | validation_metrics.prefixed("val")
             combined["epoch"] = float(epoch)
@@ -124,7 +125,9 @@ class Trainer:
             else:
                 self.epochs_without_improvement += 1
                 if self.epochs_without_improvement >= int(self.config["early_stopping_patience"]):
+                    print(self._epoch_summary(epoch, train_metrics, validation_metrics, monitored))
                     break
+            print(self._epoch_summary(epoch, train_metrics, validation_metrics, monitored))
         return best_metrics
 
     def _run_epoch(
@@ -132,13 +135,18 @@ class Trainer:
         loader: DataLoader[dict[str, Tensor]],
         training: bool,
         global_step: int,
+        epoch: int,
     ) -> tuple[EpochMetrics, int]:
         """Run one mode-specific epoch and collect answerability AP without thresholds."""
         self.model.train(training)
         totals = {"loss": 0.0, "generation": 0.0, "answerability": 0.0, "examples": 0}
         answerability_labels: list[int] = []
         answerability_scores: list[float] = []
-        for batch in loader:
+        progress = self._progress(loader, training, epoch)
+        update_every = int(self.config.get("progress", {}).get("update_every_n_steps", 1))
+        if update_every < 1:
+            raise ValueError("progress.update_every_n_steps must be at least one")
+        for batch_index, batch in enumerate(progress, start=1):
             moved = {
                 name: value.to(self.device, non_blocking=True) for name, value in batch.items()
             }
@@ -172,6 +180,11 @@ class Trainer:
                 )
             if training:
                 global_step += 1
+            if batch_index % update_every == 0:
+                progress.set_postfix(
+                    loss=f"{totals['loss'] / totals['examples']:.4f}",
+                    generation=f"{totals['generation'] / totals['examples']:.4f}",
+                )
         count = max(totals["examples"], 1)
         ap = (
             float(average_precision_score(answerability_labels, answerability_scores))
@@ -191,6 +204,51 @@ class Trainer:
     def _improved(self, value: float) -> bool:
         """Compare a monitor value with the selected direction."""
         return value < self.best_value if self.monitor_mode == "min" else value > self.best_value
+
+    def _progress(self, loader: DataLoader[dict[str, Tensor]], training: bool, epoch: int) -> Any:
+        """Create the configured terminal progress bar for one epoch.
+
+        Args:
+            loader: Batches in the current phase.
+            training: Whether gradients are enabled for this phase.
+            epoch: One-indexed epoch number shown to the user.
+
+        Returns:
+            A tqdm iterator that can be disabled through YAML.
+        """
+        settings = self.config.get("progress", {})
+        phase = "Train" if training else "Validation"
+        return tqdm(
+            loader,
+            desc=f"{phase} {epoch}/{self.config['epochs']}",
+            total=len(loader),
+            disable=not bool(settings.get("enabled", False)),
+            leave=bool(settings.get("leave", False)),
+        )
+
+    def _epoch_summary(
+        self,
+        epoch: int,
+        train_metrics: EpochMetrics,
+        validation_metrics: EpochMetrics,
+        monitored: float,
+    ) -> str:
+        """Build one readable console line after train and validation complete.
+
+        Args:
+            epoch: One-indexed completed epoch.
+            train_metrics: Aggregated training metrics.
+            validation_metrics: Aggregated validation metrics.
+            monitored: Value used for checkpoint selection.
+
+        Returns:
+            Human-readable epoch summary for the terminal.
+        """
+        return (
+            f"Epoch {epoch}/{self.config['epochs']} | "
+            f"train_loss={train_metrics.loss:.4f} | val_loss={validation_metrics.loss:.4f} | "
+            f"{self.monitor}={monitored:.4f}"
+        )
 
 
 def build_optimizer(model: nn.Module, config: Mapping[str, Any]) -> Optimizer:

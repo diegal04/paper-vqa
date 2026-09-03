@@ -1489,6 +1489,7 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "torch" },
     { name = "torchvision" },
+    { name = "tqdm" },
     { name = "transformers" },
     { name = "wandb" },
 ]
@@ -1499,6 +1500,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "types-tqdm" },
 ]
 
 [package.metadata]
@@ -1517,7 +1519,9 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "torch", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
     { name = "torchvision", specifier = "==0.21.0", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "tqdm", specifier = ">=4.67" },
     { name = "transformers", specifier = ">=4.48" },
+    { name = "types-tqdm", marker = "extra == 'dev'", specifier = ">=4.67" },
     { name = "wandb", specifier = ">=0.19" },
 ]
 provides-extras = ["dev"]
@@ -2485,6 +2489,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/16/f7/57713ba479fd405eb76de31404b2c744c289e336b2d999511ebf51e496f7/typer-0.27.2.tar.gz", hash = "sha256:269b7eb9d3c202ca84b4bc9618cb04ebb43d3d4d1e567e4c768607232c05f945", size = 204045, upload-time = "2026-08-28T10:26:55.046Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/bf/205d0004930ede8f542fb58f601526fccf4ae7626075ca1e6c4de5d3d652/typer-0.27.2-py3-none-any.whl", hash = "sha256:b3a5fc4342d5fc8fda8fc3010b1cf117e9249aab7fae800c2eff62fd3842d97d", size = 123130, upload-time = "2026-08-28T10:26:53.752Z" },
+]
+
+[[package]]
+name = "types-tqdm"
+version = "4.70.0.20260827"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fa/66/f4a8d5483513ed883e8f01c607b5d47815ca0eb796d376349fdfe85a125c/types_tqdm-4.70.0.20260827.tar.gz", hash = "sha256:d3efd69243ac9093c552f1c0d081b77286d61ace96b6899a142542555bdad2dc", size = 19251, upload-time = "2026-08-27T12:06:55.911Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/f0/b0e2a33c0367e79806054f556159f0b43e6a98d7e728aea1b07028a56ee4/types_tqdm-4.70.0.20260827-py3-none-any.whl", hash = "sha256:d6e02da8ec2bc11124e02d4bc84bd8b67a444f4c5decf544846897c8272c7023", size = 25163, upload-time = "2026-08-27T12:06:54.898Z" },
 ]
 
 [[package]]

@@ -36,7 +36,14 @@ def main(config: DictConfig) -> None:
     write_manifests(loaders.manifests, output_directory)
     model = build_vqa_model(values["model"], values["head"])
     CheckpointManager(Path(str(checkpoint_path))).load(model)
-    evaluator = Evaluator(model, processor, str(trainer_config["device"]))
+    progress = trainer_config.get("progress", {})
+    evaluator = Evaluator(
+        model,
+        processor,
+        str(trainer_config["device"]),
+        progress_enabled=bool(progress.get("enabled", True)),
+        progress_leave=bool(progress.get("leave", False)),
+    )
     configured_threshold = values["evaluation"]["threshold"]
     if configured_threshold is not None:
         threshold = float(configured_threshold)

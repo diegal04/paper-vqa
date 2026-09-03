@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from paper_vqa.data.datasets import load_rgb_image
 from paper_vqa.data.records import VQAExample
@@ -36,11 +37,28 @@ class EvaluationResult:
 class Evaluator:
     """Calibrate on validation and evaluate a checkpoint once on a supplied test set."""
 
-    def __init__(self, model: SelectiveVQAModel, processor: Any, device: str) -> None:
-        """Store a loaded model and its matching processor."""
+    def __init__(
+        self,
+        model: SelectiveVQAModel,
+        processor: Any,
+        device: str,
+        progress_enabled: bool = True,
+        progress_leave: bool = False,
+    ) -> None:
+        """Store a loaded model, processor, and terminal-progress settings.
+
+        Args:
+            model: Model to evaluate.
+            processor: Matching BLIP processor.
+            device: Device identifier for inference.
+            progress_enabled: Whether terminal progress bars are displayed.
+            progress_leave: Whether completed bars remain in the terminal.
+        """
         self.model = model.to(device).eval()
         self.processor = processor
         self.device = torch.device(device)
+        self.progress_enabled = progress_enabled
+        self.progress_leave = progress_leave
 
     @torch.no_grad()
     def calibration_scores(
@@ -51,7 +69,13 @@ class Evaluator:
             return [], []
         labels: list[int] = []
         scores: list[float] = []
-        for batch in loader:
+        for batch in tqdm(
+            loader,
+            desc="Calibrating validation",
+            total=len(loader),
+            disable=not self.progress_enabled,
+            leave=self.progress_leave,
+        ):
             moved = {name: value.to(self.device) for name, value in batch.items()}
             output = self.model(
                 pixel_values=moved["pixel_values"],
@@ -79,7 +103,13 @@ class Evaluator:
         accepted: list[bool] = []
         labels: list[int] = []
         probabilities: list[float] = []
-        for example in examples:
+        for example in tqdm(
+            examples,
+            desc="Generating predictions",
+            total=len(examples),
+            disable=not self.progress_enabled,
+            leave=self.progress_leave,
+        ):
             inputs = self.processor(
                 images=load_rgb_image(example.image),
                 text=example.question,
