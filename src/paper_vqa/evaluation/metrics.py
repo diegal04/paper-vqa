@@ -48,6 +48,8 @@ class SelectiveMetrics:
     accepted_vqa_accuracy: float
     selective_risk: float
     unsafe_answer_rate: float
+    answerable_vqa_accuracy: float
+    accepted_unanswerable_answer_rate: float
 
 
 def normalise_answer(answer: str) -> str:
@@ -176,14 +178,34 @@ def select_safety_threshold(
 
 
 def selective_metrics(
-    accepted: Sequence[bool], vqa_scores: Sequence[float], answerability_labels: Sequence[int]
+    accepted: Sequence[bool],
+    vqa_scores: Sequence[float],
+    answerability_labels: Sequence[int],
+    predicted_answers: Sequence[str | None],
 ) -> SelectiveMetrics:
-    """Measure coverage, accepted-answer accuracy and unsafe response frequency."""
+    """Measure answer quality, coverage, and unsafe selective behaviour.
+
+    Args:
+        accepted: Whether the selective policy emitted an answer for each sample.
+        vqa_scores: Per-sample VQA scores, with abstentions already scored as zero.
+        answerability_labels: Binary ground-truth answerability labels.
+        predicted_answers: Emitted answer strings, or ``None`` for abstentions.
+
+    Returns:
+        Selective metrics including VQA accuracy on truly answerable questions
+        and the rate of accepted answers that literally say ``unanswerable``.
+    """
     accept_array = np.asarray(accepted, dtype=bool)
     vqa_array = np.asarray(vqa_scores, dtype=np.float64)
     labels = np.asarray(answerability_labels, dtype=np.int64)
-    if not (accept_array.shape == vqa_array.shape == labels.shape) or accept_array.size == 0:
+    answer_array = np.asarray(predicted_answers, dtype=object)
+    if (
+        not (accept_array.shape == vqa_array.shape == labels.shape == answer_array.shape)
+        or accept_array.size == 0
+    ):
         raise ValueError("selective metric inputs must be equally sized and non-empty")
+    if not np.isin(labels, [0, 1]).all():
+        raise ValueError("answerability labels must be binary")
     coverage = float(accept_array.mean())
     accepted_accuracy = (
         float(vqa_array[accept_array].mean()) if accept_array.any() else float("nan")
@@ -191,7 +213,26 @@ def selective_metrics(
     risk = 1.0 - accepted_accuracy if accept_array.any() else float("nan")
     unanswerable = labels == 0
     unsafe = float(accept_array[unanswerable].mean()) if unanswerable.any() else 0.0
-    return SelectiveMetrics(coverage, accepted_accuracy, risk, unsafe)
+    answerable = labels == 1
+    answerable_accuracy = float(vqa_array[answerable].mean()) if answerable.any() else float("nan")
+    textual_unanswerable = np.asarray(
+        [
+            answer is not None and normalise_answer(str(answer)) == "unanswerable"
+            for answer in predicted_answers
+        ],
+        dtype=bool,
+    )
+    accepted_unanswerable_rate = (
+        float(textual_unanswerable[accept_array].mean()) if accept_array.any() else float("nan")
+    )
+    return SelectiveMetrics(
+        coverage=coverage,
+        accepted_vqa_accuracy=accepted_accuracy,
+        selective_risk=risk,
+        unsafe_answer_rate=unsafe,
+        answerable_vqa_accuracy=answerable_accuracy,
+        accepted_unanswerable_answer_rate=accepted_unanswerable_rate,
+    )
 
 
 def aggregate_seed_metrics(metrics: Sequence[AnswerabilityMetrics]) -> dict[str, dict[str, float]]:

@@ -233,9 +233,11 @@ For a head-enabled model, the primary classification metric is **average precisi
 - AUROC;
 - F1, precision, recall, specificity, and balanced accuracy at the selected threshold;
 - Brier score and equal-width expected calibration error (ECE, 15 bins by default);
-- coverage, accepted-answer VQA accuracy, selective risk, and unsafe answer rate.
+- coverage, accepted-answer VQA accuracy, selective risk, and unsafe answer rate;
+- VQA accuracy restricted to genuinely answerable questions, with abstentions scored as zero; and
+- the fraction of emitted answers that literally say `"unanswerable"` after VQA normalisation.
 
-`unsafe_answer_rate` is the fraction of genuinely unanswerable questions for which the system emits an answer. Lower is better. `coverage` is the fraction of all questions for which it emits an answer. `selective_risk = 1 - accepted_vqa_accuracy`.
+`unsafe_answer_rate` is the fraction of genuinely unanswerable questions for which the system emits an answer. Lower is better. `coverage` is the fraction of all questions for which it emits an answer. `selective_risk = 1 - accepted_vqa_accuracy`. The two additional diagnostics separate useful answer quality from the benchmark reward obtained by generating the literal token `"unanswerable"`.
 
 When no threshold is provided for a head-enabled development evaluation, the threshold is selected **only on validation**. Among all thresholds satisfying `evaluation.minimum_answerable_recall` (0.90 by default), the selector chooses the one with the smallest unsafe answer rate and, on ties, the largest threshold. The selected numerical threshold is model- and seed-specific; do not compare its absolute value across different models.
 

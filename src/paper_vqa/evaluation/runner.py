@@ -148,6 +148,7 @@ class Evaluator:
         records: list[PredictionRecord] = []
         vqa_scores: list[float] = []
         accepted: list[bool] = []
+        predicted_answers: list[str | None] = []
         labels: list[int] = []
         probabilities: list[float] = []
         for example in tqdm(
@@ -187,6 +188,7 @@ class Evaluator:
                 )
             )
             accepted.append(is_accepted)
+            predicted_answers.append(answer)
             score_vqa = (
                 official_vqa_accuracy(answer, example.answers) if answer is not None else 0.0
             )
@@ -200,7 +202,9 @@ class Evaluator:
             if labels and self.model.answerability_head is not None
             else None
         )
-        selective = selective_metrics(accepted, vqa_scores, labels) if labels else None
+        selective = (
+            selective_metrics(accepted, vqa_scores, labels, predicted_answers) if labels else None
+        )
         return EvaluationResult(threshold, vqa_accuracy, classification, selective), records
 
 

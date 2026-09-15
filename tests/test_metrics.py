@@ -23,8 +23,15 @@ def test_safety_threshold_respects_answerable_recall() -> None:
 
 
 def test_selective_metrics_report_unsafe_responses() -> None:
-    metrics = selective_metrics([True, False, True], [1.0, 0.0, 0.5], [1, 0, 0])
+    metrics = selective_metrics(
+        [True, False, True, True],
+        [1.0, 0.0, 0.5, 0.0],
+        [1, 0, 0, 1],
+        ["yes", None, "Unanswerable.", "no"],
+    )
 
-    assert metrics.coverage == 2 / 3
+    assert metrics.coverage == 3 / 4
     assert metrics.unsafe_answer_rate == 0.5
+    assert metrics.answerable_vqa_accuracy == 0.5
+    assert metrics.accepted_unanswerable_answer_rate == 1 / 3
     assert not math.isnan(metrics.selective_risk)
