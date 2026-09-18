@@ -1,0 +1,54 @@
+program: paper-vqa-train
+name: vqa-hpo-smoke
+method: grid
+metric:
+  goal: maximize
+  name: selection/answerability_ap
+parameters:
+  model:
+    value: blip_vqa_lora_r8_a16
+  trainer.learning_rate:
+    value: 0.0002
+  trainer.weight_decay:
+    value: 0.01
+  model.lora.dropout:
+    value: 0.05
+  head.hidden_dim:
+    value: 256
+  head.dropout:
+    value: 0.30
+  trainer.warmup_ratio:
+    value: 0.05
+  loss.answerability_weight:
+    value: 0.25
+command:
+  - ${env}
+  - uv
+  - run
+  - paper-vqa-train
+  - replay=none
+  - head=mlp
+  - experiment.name=hpo_smoke
+  - data.train.max_samples=16
+  - data.validation.max_samples=8
+  - trainer.seed=42
+  - trainer.epochs=1
+  - trainer.batch_size=4
+  - trainer.num_workers=0
+  - trainer.cpu_threads=1
+  - trainer.warmup_steps=0
+  - trainer.checkpoint_monitor=val/answerability_ap
+  - trainer.checkpoint_mode=max
+  - trainer.early_stopping_patience=1
+  - trainer.progress.leave=true
+  - loss.vqa_loss_policy=all_examples
+  - loss.vqa_target_policy=modal
+  - loss.unanswerable_vqa_weight=1.0
+  - head.pooling=masked_mean
+  - logging.enabled=true
+  - logging.mode=online
+  - logging.group=hpo_smoke
+  - logging.upload_manifests=true
+  - logging.upload_checkpoints=false
+  - logging.upload_predictions=false
+  - ${args_no_hyphens}

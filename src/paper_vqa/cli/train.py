@@ -23,9 +23,15 @@ def main(config: DictConfig) -> None:
     values = resolved_config(config)
     trainer_config = values["trainer"]
     trainer_config["device"] = resolve_device(str(trainer_config["device"]))
-    seed_everything(int(trainer_config["seed"]), bool(trainer_config["deterministic"]))
+    seed_everything(
+        int(trainer_config["seed"]),
+        bool(trainer_config["deterministic"]),
+        int(trainer_config["cpu_threads"]),
+    )
     processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
-    datamodule = VQADataModule(values["data"], values["replay"], processor, trainer_config)
+    datamodule = VQADataModule(
+        values["data"], values["replay"], processor, trainer_config, values["loss"]
+    )
     loaders = datamodule.build()
     output_directory = Path(str(trainer_config["output_dir"])).parent
     write_manifests(loaders.manifests, output_directory)
@@ -39,6 +45,7 @@ def main(config: DictConfig) -> None:
         answerability_weight=float(values["loss"]["answerability_weight"]),
         vqa_loss_policy=cast(VQALossPolicy, loss_policy),
         answerability_class_weights=weights,
+        unanswerable_vqa_weight=float(values["loss"].get("unanswerable_vqa_weight", 1.0)),
     )
     optimizer = build_optimizer(model, trainer_config)
     scheduler = build_scheduler(

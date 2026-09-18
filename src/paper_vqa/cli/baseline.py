@@ -10,7 +10,13 @@ from paper_vqa.cli.common import resolve_device, resolved_config, write_manifest
 from paper_vqa.cli.paths import config_directory
 from paper_vqa.data.datasets import build_adapter
 from paper_vqa.data.records import SourceConfig, VQAExample
-from paper_vqa.evaluation.runner import Evaluator, write_evaluation
+from paper_vqa.evaluation.policies import (
+    calibrate_policy_thresholds,
+    compare_abstention_policies,
+    flatten_policy_metrics,
+    write_policy_comparison,
+)
+from paper_vqa.evaluation.runner import Evaluator, flatten_evaluation_metrics, write_evaluation
 from paper_vqa.models.factory import build_processor, build_vqa_model
 from paper_vqa.training.tracker import build_tracker
 from paper_vqa.utils.manifests import DatasetManifest
@@ -24,7 +30,11 @@ def main(config: DictConfig) -> None:
     _validate_zero_shot_configuration(values["model"], values["head"])
     trainer_config = values["trainer"]
     trainer_config["device"] = resolve_device(str(trainer_config["device"]))
-    seed_everything(int(trainer_config["seed"]), bool(trainer_config["deterministic"]))
+    seed_everything(
+        int(trainer_config["seed"]),
+        bool(trainer_config["deterministic"]),
+        int(trainer_config["cpu_threads"]),
+    )
     examples, manifest = _load_examples(values["data"], values["baseline"])
     output_directory = Path(str(trainer_config["output_dir"])).parent
     write_manifests((manifest,), output_directory)
@@ -38,19 +48,35 @@ def main(config: DictConfig) -> None:
         progress_enabled=bool(progress.get("enabled", True)),
         progress_leave=bool(progress.get("leave", False)),
     )
-    result, predictions = evaluator.evaluate_examples(
+    generations = evaluator.generate_examples(
         examples,
-        float(values["baseline"]["threshold"]),
         dict(values["evaluation"]["generation"]),
+    )
+    thresholds = calibrate_policy_thresholds(
+        generations,
+        float(values["evaluation"]["minimum_answerable_recall"]),
+        [float(target) for target in values["evaluation"]["matched_answerable_recall_targets"]],
+    )
+    result, predictions = evaluator.evaluate_records(
+        generations,
+        float(values["baseline"]["threshold"]),
         int(values["evaluation"]["ece_bins"]),
+    )
+    comparison = compare_abstention_policies(
+        generations,
+        thresholds,
+        int(values["evaluation"]["risk_coverage_points"]),
     )
     baseline_directory = output_directory / "baseline"
     write_evaluation(result, predictions, baseline_directory)
+    write_policy_comparison(comparison, baseline_directory)
     tracker = build_tracker(values["logging"], values)
     try:
         tracker.log_artifact(output_directory / "manifests", "data-manifests", "dataset")
         tracker.log_artifact(baseline_directory, "zero-shot-baseline", "evaluation")
-        tracker.log({"validation/vqa_accuracy": result.vqa_accuracy}, step=0)
+        metrics = flatten_evaluation_metrics(result, "validation")
+        metrics.update(flatten_policy_metrics(comparison, "validation"))
+        tracker.log(metrics, step=0)
     finally:
         tracker.finish()
     print(result)

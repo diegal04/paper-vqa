@@ -1,7 +1,5 @@
 """Metrics for answer quality, abstention quality and calibrated safety policies."""
 
-import re
-import string
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
@@ -14,6 +12,10 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+from paper_vqa.evaluation.normalization import VQAAnswerNormalizer
+
+_VQA_NORMALIZER = VQAAnswerNormalizer()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,16 +50,14 @@ class SelectiveMetrics:
     accepted_vqa_accuracy: float
     selective_risk: float
     unsafe_answer_rate: float
+    specific_unsafe_answer_rate: float
     answerable_vqa_accuracy: float
     accepted_unanswerable_answer_rate: float
 
 
 def normalise_answer(answer: str) -> str:
-    """Apply the standard VQA-style normalisation used before answer matching."""
-    lowered = answer.lower().strip()
-    without_articles = re.sub(r"\b(a|an|the)\b", " ", lowered)
-    without_punctuation = without_articles.translate(str.maketrans("", "", string.punctuation))
-    return " ".join(without_punctuation.split())
+    """Apply the official VQA answer normalisation rules."""
+    return _VQA_NORMALIZER.normalize(answer)
 
 
 def official_vqa_accuracy(prediction: str, references: Sequence[str]) -> float:
@@ -72,8 +72,12 @@ def official_vqa_accuracy(prediction: str, references: Sequence[str]) -> float:
     """
     if not references:
         raise ValueError("references cannot be empty")
-    prediction_normalised = normalise_answer(prediction)
-    matches = sum(normalise_answer(reference) == prediction_normalised for reference in references)
+    cleaned_references = [_VQA_NORMALIZER.strip_only(reference) for reference in references]
+    cleaned_prediction = _VQA_NORMALIZER.strip_only(prediction)
+    if len(set(cleaned_references)) > 1:
+        cleaned_references = [normalise_answer(reference) for reference in cleaned_references]
+        cleaned_prediction = normalise_answer(cleaned_prediction)
+    matches = sum(reference == cleaned_prediction for reference in cleaned_references)
     total = len(references)
     score_when_matching_held_out = min(1.0, max(matches - 1, 0) / 3.0)
     score_when_not_matching_held_out = min(1.0, matches / 3.0)
@@ -192,8 +196,9 @@ def selective_metrics(
         predicted_answers: Emitted answer strings, or ``None`` for abstentions.
 
     Returns:
-        Selective metrics including VQA accuracy on truly answerable questions
-        and the rate of accepted answers that literally say ``unanswerable``.
+        Selective metrics including VQA accuracy on truly answerable questions,
+        the rate of accepted answers that literally say ``unanswerable``, and
+        the rate of genuinely unanswerable questions receiving a specific answer.
     """
     accept_array = np.asarray(accepted, dtype=bool)
     vqa_array = np.asarray(vqa_scores, dtype=np.float64)
@@ -222,6 +227,10 @@ def selective_metrics(
         ],
         dtype=bool,
     )
+    specific_unsafe = accept_array & unanswerable & ~textual_unanswerable
+    specific_unsafe_rate = (
+        float(specific_unsafe.sum() / unanswerable.sum()) if unanswerable.any() else 0.0
+    )
     accepted_unanswerable_rate = (
         float(textual_unanswerable[accept_array].mean()) if accept_array.any() else float("nan")
     )
@@ -230,6 +239,7 @@ def selective_metrics(
         accepted_vqa_accuracy=accepted_accuracy,
         selective_risk=risk,
         unsafe_answer_rate=unsafe,
+        specific_unsafe_answer_rate=specific_unsafe_rate,
         answerable_vqa_accuracy=answerable_accuracy,
         accepted_unanswerable_answer_rate=accepted_unanswerable_rate,
     )

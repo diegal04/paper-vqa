@@ -30,6 +30,7 @@ class MultitaskObjective(nn.Module):
         answerability_weight: float,
         vqa_loss_policy: VQALossPolicy,
         answerability_class_weights: Tensor | None = None,
+        unanswerable_vqa_weight: float = 1.0,
     ) -> None:
         """Initialise the configured loss policy.
 
@@ -37,12 +38,17 @@ class MultitaskObjective(nn.Module):
             answerability_weight: Auxiliary-loss multiplier.
             vqa_loss_policy: Whether unanswerable VizWiz examples train the decoder.
             answerability_class_weights: Optional class weights for the binary head.
+            unanswerable_vqa_weight: Decoder-loss multiplier for explicitly
+                unanswerable records under ``all_examples``.
         """
         super().__init__()
         if answerability_weight < 0:
             raise ValueError("answerability_weight must be non-negative")
+        if unanswerable_vqa_weight < 0:
+            raise ValueError("unanswerable_vqa_weight must be non-negative")
         self.answerability_weight = answerability_weight
         self.vqa_loss_policy = vqa_loss_policy
+        self.unanswerable_vqa_weight = unanswerable_vqa_weight
         self.class_weights = answerability_class_weights
         self.register_buffer("_class_weights_buffer", answerability_class_weights)
 
@@ -56,7 +62,12 @@ class MultitaskObjective(nn.Module):
         Returns:
             Differentiable total and individual loss values.
         """
-        generation = self._generation_loss(output, batch["labels"], batch["answerable"])
+        generation = self._generation_loss(
+            output,
+            batch["labels"],
+            batch["answerable"],
+            batch["has_answerable"],
+        )
         answerability, count = self._answerability_loss(
             output.answerability_logits,
             batch["answerable"],
@@ -71,7 +82,11 @@ class MultitaskObjective(nn.Module):
         )
 
     def _generation_loss(
-        self, output: VQAForwardOutput, labels: Tensor, answerable: Tensor
+        self,
+        output: VQAForwardOutput,
+        labels: Tensor,
+        answerable: Tensor,
+        has_answerable: Tensor,
     ) -> Tensor:
         """Compute next-token decoder loss under the configured sample policy.
 
@@ -91,15 +106,19 @@ class MultitaskObjective(nn.Module):
             logits[:, :-1].transpose(1, 2), labels[:, 1:], ignore_index=-100, reduction="none"
         )
         valid_tokens = labels[:, 1:] != -100
-        if self.vqa_loss_policy == "all_examples":
-            count = valid_tokens.sum().clamp_min(1)
-            return token_losses.sum() / count
-        mask = answerable.to(dtype=torch.bool)
-        selected_tokens = valid_tokens[mask]
-        selected_losses = token_losses[mask]
+        explicitly_unanswerable = has_answerable.bool() & ~answerable.bool()
+        negative_weight = (
+            0.0 if self.vqa_loss_policy == "answerable_only" else self.unanswerable_vqa_weight
+        )
+        sample_weights = torch.ones(
+            labels.shape[0], dtype=token_losses.dtype, device=token_losses.device
+        )
+        sample_weights[explicitly_unanswerable] = negative_weight
+        token_weights = valid_tokens.to(token_losses.dtype) * sample_weights.unsqueeze(1)
+        denominator = token_weights.sum()
         return (
-            selected_losses.sum() / selected_tokens.sum().clamp_min(1)
-            if bool(mask.any())
+            (token_losses * token_weights).sum() / denominator.clamp_min(1.0)
+            if bool(denominator > 0)
             else token_losses.sum() * 0.0
         )
 

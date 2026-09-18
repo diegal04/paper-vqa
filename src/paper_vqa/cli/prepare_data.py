@@ -17,9 +17,9 @@ def main(config: DictConfig) -> None:
     values = resolved_config(config)
     processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
     include_test = bool(values["data"].get("include_test", False))
-    loaders = VQADataModule(values["data"], values["replay"], processor, values["trainer"]).build(
-        include_test=include_test
-    )
+    loaders = VQADataModule(
+        values["data"], values["replay"], processor, values["trainer"], values["loss"]
+    ).build(include_test=include_test)
     output_directory = Path(str(values["trainer"]["output_dir"])).parent
     write_manifests(loaders.manifests, output_directory)
     print(f"Validated {len(loaders.manifests)} manifests in {output_directory}")

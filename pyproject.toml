@@ -36,6 +36,7 @@ paper-vqa-prepare-data = "paper_vqa.cli.prepare_data:main"
 paper-vqa-audit-data = "paper_vqa.cli.audit_data:main"
 paper-vqa-baseline = "paper_vqa.cli.baseline:main"
 paper-vqa-evaluate-development = "paper_vqa.cli.evaluate_development:main"
+paper-vqa-report-development-policies = "paper_vqa.cli.report_development_policies:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -69,7 +70,7 @@ warn_unused_ignores = true
 exclude = ["tests"]
 
 [[tool.mypy.overrides]]
-module = ["datasets.*", "hydra.*", "omegaconf.*", "peft.*", "safetensors.*", "sklearn.*", "transformers.*", "wandb.*"]
+module = ["datasets.*", "hydra.*", "omegaconf.*", "peft.*", "safetensors.*", "sklearn.*", "threadpoolctl.*", "transformers.*", "wandb.*"]
 ignore_missing_imports = true
 
 [tool.uv.sources]

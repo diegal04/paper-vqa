@@ -28,6 +28,15 @@ class SelectivePrediction:
     accepted: Tensor
 
 
+@dataclass(frozen=True, slots=True)
+class ScoredGeneration:
+    """Generated answers with head and decoder confidence signals."""
+
+    answer_ids: Tensor
+    answerability_scores: Tensor | None
+    decoder_scores: Tensor
+
+
 class SelectiveVQAModel(nn.Module):
     """BLIP VQA with optional LoRA and an optional answerability head."""
 
@@ -105,6 +114,62 @@ class SelectiveVQAModel(nn.Module):
             **generation_kwargs,
         )
         return SelectivePrediction(answer_ids, score, accepted)
+
+    @torch.no_grad()
+    def generate_with_scores(
+        self,
+        pixel_values: Tensor,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        generation_kwargs: dict[str, Any],
+    ) -> ScoredGeneration:
+        """Generate every answer and expose comparable selection scores.
+
+        This method is intended for scientific evaluation, where every policy
+        must be compared on the same generated answer. Deployment inference
+        should continue to use :meth:`predict`, which avoids decoder work for
+        examples rejected by the answerability head.
+
+        Args:
+            pixel_values: Preprocessed image batch.
+            input_ids: Tokenised questions.
+            attention_mask: Question-token mask.
+            generation_kwargs: BLIP decoding configuration.
+
+        Returns:
+            Generated token IDs, optional head probabilities, and geometric
+            mean token probabilities from the decoder.
+        """
+        answerability_scores: Tensor | None = None
+        if self.answerability_head is not None:
+            hidden_states = self._multimodal_hidden_states(pixel_values, input_ids, attention_mask)
+            answerability_scores = self.answerability_head(
+                hidden_states, attention_mask
+            ).probabilities[:, 1]
+        options = dict(generation_kwargs)
+        options["return_dict_in_generate"] = True
+        options["output_scores"] = True
+        generated = self.blip_model.generate(
+            pixel_values=pixel_values,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **options,
+        )
+        sequences = cast(Tensor | None, getattr(generated, "sequences", None))
+        generation_scores = getattr(generated, "scores", None)
+        if sequences is None or not generation_scores:
+            raise RuntimeError("BLIP generation did not return token-level scores")
+        transition_scores = self.blip_model.text_decoder.compute_transition_scores(
+            sequences,
+            generation_scores,
+            getattr(generated, "beam_indices", None),
+            normalize_logits=True,
+        )
+        generated_mask = transition_scores.ne(0)
+        token_counts = generated_mask.sum(dim=1).clamp_min(1)
+        mean_log_probability = transition_scores.sum(dim=1) / token_counts
+        decoder_scores = mean_log_probability.exp().clamp(0.0, 1.0)
+        return ScoredGeneration(sequences, answerability_scores, decoder_scores)
 
     def _multimodal_hidden_states(
         self,

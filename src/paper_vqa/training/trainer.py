@@ -1,5 +1,7 @@
 """Object-oriented training loop for reproducible multitask VQA experiments."""
 
+import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +83,8 @@ class Trainer:
         self.monitor_mode = cast(MonitorMode, mode)
         self.best_value = float("inf") if self.monitor_mode == "min" else float("-inf")
         self.epochs_without_improvement = 0
+        self.history_path = self.checkpoints.directory.parent / "history.json"
+        self.history: list[dict[str, Any]] = []
 
     def fit(
         self,
@@ -99,11 +103,12 @@ class Trainer:
             )
             combined = train_metrics.prefixed("train") | validation_metrics.prefixed("val")
             combined["epoch"] = float(epoch)
-            self.tracker.log(combined, global_step)
+            combined["train/learning_rate"] = float(self.optimizer.param_groups[0]["lr"])
             monitored = combined.get(self.monitor)
             if monitored is None or np.isnan(monitored):
                 raise ValueError(f"checkpoint monitor {self.monitor!r} is unavailable")
-            if self._improved(monitored):
+            checkpoint_selected = self._improved(monitored)
+            if checkpoint_selected:
                 self.best_value = monitored
                 self.epochs_without_improvement = 0
                 self.checkpoints.save(
@@ -116,19 +121,72 @@ class Trainer:
                         config=self.resolved_config,
                     ),
                 )
-                self.tracker.log_artifact(
-                    self.checkpoints.directory,
-                    name="selected-checkpoint",
-                    artifact_type="model",
+                combined.update(
+                    {
+                        "selection/monitor_value": monitored,
+                        "selection/answerability_ap": validation_metrics.answerability_ap,
+                        "selection/loss": validation_metrics.loss,
+                        "selection/generation_loss": validation_metrics.generation_loss,
+                        "selection/answerability_loss": validation_metrics.answerability_loss,
+                        "selection/epoch": float(epoch),
+                    }
                 )
                 best_metrics = combined
             else:
                 self.epochs_without_improvement += 1
+            self.tracker.log(combined, global_step)
+            self._record_history(epoch, global_step, combined, checkpoint_selected)
+            if not checkpoint_selected:
                 if self.epochs_without_improvement >= int(self.config["early_stopping_patience"]):
                     print(self._epoch_summary(epoch, train_metrics, validation_metrics, monitored))
                     break
             print(self._epoch_summary(epoch, train_metrics, validation_metrics, monitored))
+        if best_metrics:
+            self.tracker.log_artifact(
+                self.checkpoints.directory,
+                name="selected-checkpoint",
+                artifact_type="model",
+            )
         return best_metrics
+
+    def _record_history(
+        self,
+        epoch: int,
+        global_step: int,
+        metrics: Mapping[str, float],
+        checkpoint_selected: bool,
+    ) -> None:
+        """Persist one completed epoch locally using crash-safe replacement.
+
+        Args:
+            epoch: One-indexed epoch number.
+            global_step: Number of completed optimizer steps.
+            metrics: Combined training and validation scalar metrics.
+            checkpoint_selected: Whether this epoch replaced the best checkpoint.
+        """
+        serializable_metrics = {
+            name: value if math.isfinite(value) else None for name, value in metrics.items()
+        }
+        self.history.append(
+            {
+                "epoch": epoch,
+                "global_step": global_step,
+                "checkpoint_selected": checkpoint_selected,
+                "metrics": serializable_metrics,
+            }
+        )
+        payload = {
+            "checkpoint_monitor": self.monitor,
+            "checkpoint_mode": self.monitor_mode,
+            "best_value": self.best_value if math.isfinite(self.best_value) else None,
+            "epochs": self.history,
+        }
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.history_path.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8"
+        )
+        temporary_path.replace(self.history_path)
 
     def _run_epoch(
         self,
@@ -264,13 +322,38 @@ def build_optimizer(model: nn.Module, config: Mapping[str, Any]) -> Optimizer:
 
 
 def build_scheduler(optimizer: Optimizer, total_steps: int, config: Mapping[str, Any]) -> Any:
-    """Build the configured linear warmup/decay scheduler."""
+    """Build the configured scheduler using a scale-safe warmup definition."""
     from transformers import get_scheduler
 
-    warmup_steps = int(config["warmup_steps"])
+    warmup_steps = resolve_warmup_steps(total_steps, config)
     return get_scheduler(
         name=str(config["scheduler"]),
         optimizer=optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
     )
+
+
+def resolve_warmup_steps(total_steps: int, config: Mapping[str, Any]) -> int:
+    """Resolve an optional warmup ratio or fall back to an absolute step count.
+
+    Args:
+        total_steps: Planned optimizer updates for the full epoch ceiling.
+        config: Trainer mapping containing ``warmup_ratio`` and ``warmup_steps``.
+
+    Returns:
+        Non-negative number of scheduler warmup updates. A configured ratio
+        takes precedence over the legacy absolute count.
+    """
+    if total_steps < 1:
+        raise ValueError("total_steps must be positive")
+    ratio = config.get("warmup_ratio")
+    if ratio is None:
+        steps = int(config["warmup_steps"])
+        if steps < 0:
+            raise ValueError("warmup_steps must be non-negative")
+        return steps
+    value = float(ratio)
+    if not 0.0 <= value < 1.0:
+        raise ValueError("warmup_ratio must be in [0, 1)")
+    return math.ceil(total_steps * value)

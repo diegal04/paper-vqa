@@ -9,6 +9,7 @@ defaults:
   - loss: multitask
   - trainer: default
   - evaluation: default
+  - policy_report: default
   - logging: wandb
   - experiment: debug
   - _self_

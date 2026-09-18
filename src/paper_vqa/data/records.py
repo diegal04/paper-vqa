@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 BackendName = Literal["huggingface", "local_json", "huggingface_with_annotations"]
+TrainingTargetPolicy = Literal["modal", "label_consistent_modal"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +103,41 @@ class VQAExample:
     @property
     def training_answer(self) -> str:
         """Return the deterministic modal answer used only for generation loss."""
+        return self._modal_answer(self.answers)
+
+    def target_answer(self, policy: TrainingTargetPolicy) -> str:
+        """Select a deterministic decoder target under an explicit policy.
+
+        Args:
+            policy: ``modal`` preserves the original target selection.
+                ``label_consistent_modal`` excludes the abstention string from
+                labelled answerable records and forces it for labelled
+                unanswerable records. Unlabelled replay retains its modal target.
+
+        Returns:
+            Text used as the single autoregressive decoder target.
+        """
+        if policy == "modal":
+            return self.training_answer
+        if policy != "label_consistent_modal":
+            raise ValueError(f"unsupported training target policy: {policy}")
+        if self.answerable == 0:
+            return "unanswerable"
+        if self.answerable is None:
+            return self.training_answer
+        candidates = tuple(answer for answer in self.answers if not _is_unanswerable(answer))
+        return self._modal_answer(candidates) if candidates else self.training_answer
+
+    @staticmethod
+    def _modal_answer(answers: tuple[str, ...]) -> str:
+        """Return the first most-frequent answer with deterministic tie-breaking."""
         counts: dict[str, int] = {}
-        for answer in self.answers:
+        for answer in answers:
             counts[answer] = counts.get(answer, 0) + 1
         highest_count = max(counts.values())
-        return next(answer for answer in self.answers if counts[answer] == highest_count)
+        return next(answer for answer in answers if counts[answer] == highest_count)
+
+
+def _is_unanswerable(answer: str) -> bool:
+    """Recognise the canonical VizWiz abstention answer robustly."""
+    return answer.strip().casefold().strip(".,!?;:\"'") == "unanswerable"

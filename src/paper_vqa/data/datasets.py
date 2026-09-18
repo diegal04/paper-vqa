@@ -11,7 +11,7 @@ from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from paper_vqa.data.records import SourceConfig, VQAExample
+from paper_vqa.data.records import SourceConfig, TrainingTargetPolicy, VQAExample
 from paper_vqa.utils.manifests import DatasetManifest, ManifestEntry, manifest_from_entries
 
 
@@ -303,12 +303,14 @@ class RecordVQADataset(Dataset[dict[str, Tensor]]):
         processor: Any,
         max_question_length: int,
         max_answer_length: int,
+        target_policy: TrainingTargetPolicy,
     ) -> None:
-        """Store records and processor parameters without mutating annotations."""
+        """Store records, processor parameters, and decoder-target policy."""
         self.examples = tuple(examples)
         self.processor = processor
         self.max_question_length = max_question_length
         self.max_answer_length = max_answer_length
+        self.target_policy = target_policy
 
     def __len__(self) -> int:
         """Return the number of examples."""
@@ -327,7 +329,7 @@ class RecordVQADataset(Dataset[dict[str, Tensor]]):
             truncation=True,
         )
         answer_tokens = self.processor.tokenizer(
-            example.training_answer,
+            example.target_answer(self.target_policy),
             return_tensors="pt",
             max_length=self.max_answer_length,
             padding="max_length",

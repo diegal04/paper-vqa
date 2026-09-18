@@ -1,3 +1,4 @@
+import os
 import random
 
 import numpy as np
@@ -20,10 +21,17 @@ def test_manifest_overlap_is_rejected() -> None:
         assert_disjoint_manifests(train, test)
 
 
-def test_seed_everything_reproduces_all_local_generators() -> None:
-    seed_everything(9)
+def test_seed_everything_reproduces_all_local_generators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "true")
+    report = seed_everything(9)
     first = (random.random(), float(np.random.random()), float(torch.rand(())))
     seed_everything(9)
     second = (random.random(), float(np.random.random()), float(torch.rand(())))
 
     assert first == second
+    assert os.environ["TOKENIZERS_PARALLELISM"] == "false"
+    assert report.tokenizers_parallelism is False
+    assert report.cpu_threads == 1
+    assert torch.get_num_threads() == 1

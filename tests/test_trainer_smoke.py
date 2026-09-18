@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import torch
@@ -7,7 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from paper_vqa.models.selective_vqa import VQAForwardOutput
 from paper_vqa.training.objective import MultitaskObjective
 from paper_vqa.training.tracker import NullTracker
-from paper_vqa.training.trainer import Trainer, build_optimizer
+from paper_vqa.training.trainer import Trainer, build_optimizer, resolve_warmup_steps
 
 
 class TinyDataset(Dataset[dict[str, Tensor]]):
@@ -50,8 +51,21 @@ class TinyVQA(nn.Module):
         )
 
 
+class CapturingTracker(NullTracker):
+    """No-op tracker that retains scalar events for assertions."""
+
+    def __init__(self) -> None:
+        """Initialise an empty event list."""
+        self.events: list[tuple[dict[str, float], int]] = []
+
+    def log(self, metrics: dict[str, float], step: int) -> None:
+        """Capture one training event."""
+        self.events.append((dict(metrics), step))
+
+
 def test_trainer_smoke_saves_safe_checkpoint(tmp_path: Path) -> None:
     model = TinyVQA()
+    tracker = CapturingTracker()
     config = {
         "device": "cpu",
         "output_dir": str(tmp_path / "checkpoint"),
@@ -68,7 +82,7 @@ def test_trainer_smoke_saves_safe_checkpoint(tmp_path: Path) -> None:
         MultitaskObjective(1.0, "all_examples"),
         build_optimizer(model, config),
         None,
-        NullTracker(),
+        tracker,
         config,
         {"smoke": True},
     )
@@ -79,3 +93,18 @@ def test_trainer_smoke_saves_safe_checkpoint(tmp_path: Path) -> None:
     assert "val/loss" in result
     assert (tmp_path / "checkpoint" / "model.safetensors").exists()
     assert (tmp_path / "checkpoint" / "metadata.json").exists()
+    metadata = json.loads((tmp_path / "checkpoint" / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["format_version"] == 2
+    assert metadata["weights_scope"] == "trainable"
+    history = json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))
+    assert history["checkpoint_monitor"] == "val/loss"
+    assert history["epochs"][0]["checkpoint_selected"] is True
+    assert history["epochs"][0]["global_step"] == 2
+    assert "train/learning_rate" in history["epochs"][0]["metrics"]
+    assert tracker.events[0][0]["selection/answerability_ap"] == result["val/answerability_ap"]
+    assert tracker.events[0][0]["selection/epoch"] == 1.0
+
+
+def test_warmup_ratio_scales_with_planned_training_steps() -> None:
+    assert resolve_warmup_steps(101, {"warmup_ratio": 0.05, "warmup_steps": 200}) == 6
+    assert resolve_warmup_steps(101, {"warmup_ratio": None, "warmup_steps": 20}) == 20

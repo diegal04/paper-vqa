@@ -27,6 +27,9 @@ class _TextDecoder(nn.Module):
         logits = torch.zeros((*input_ids.shape, 8), dtype=torch.float32)
         return SimpleNamespace(loss=torch.ones(input_ids.shape[0]), logits=logits)
 
+    def compute_transition_scores(self, *_: object, **__: object) -> Tensor:
+        return torch.log(torch.tensor([[0.5, 0.25]], dtype=torch.float32))
+
 
 class _BlipStub(nn.Module):
     def __init__(self) -> None:
@@ -35,6 +38,13 @@ class _BlipStub(nn.Module):
         self.text_encoder = _TextEncoder()
         self.text_decoder = _TextDecoder()
         self.config = SimpleNamespace(text_config=SimpleNamespace(pad_token_id=0))
+
+    def generate(self, **_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            sequences=torch.tensor([[1, 2]]),
+            scores=(torch.zeros((1, 8)), torch.zeros((1, 8))),
+            beam_indices=None,
+        )
 
 
 def test_forward_uses_decoder_logits_only_when_generation_labels_exist() -> None:
@@ -54,3 +64,18 @@ def test_forward_uses_decoder_logits_only_when_generation_labels_exist() -> None
     assert blip.text_decoder.calls == 1
     assert classified.generation_logits is None
     assert classified.generation_loss is None
+
+
+def test_scored_generation_returns_geometric_mean_token_probability() -> None:
+    model = SelectiveVQAModel(_BlipStub(), None)
+
+    result = model.generate_with_scores(
+        pixel_values=torch.ones((1, 3)),
+        input_ids=torch.tensor([[1, 2]]),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        generation_kwargs={"num_beams": 1},
+    )
+
+    assert result.answer_ids.tolist() == [[1, 2]]
+    assert result.answerability_scores is None
+    assert torch.allclose(result.decoder_scores, torch.tensor([(0.5 * 0.25) ** 0.5]))

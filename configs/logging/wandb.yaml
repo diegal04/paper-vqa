@@ -4,3 +4,7 @@ entity: null
 mode: offline
 group: null
 tags: []
+directory: ${hydra:runtime.output_dir}
+upload_manifests: true
+upload_checkpoints: false
+upload_predictions: false

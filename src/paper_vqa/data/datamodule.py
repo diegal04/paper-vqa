@@ -2,12 +2,12 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, WeightedRandomSampler
 
 from paper_vqa.data.datasets import RecordVQADataset, build_adapter
-from paper_vqa.data.records import SourceConfig, VQAExample
+from paper_vqa.data.records import SourceConfig, TrainingTargetPolicy, VQAExample
 from paper_vqa.utils.manifests import DatasetManifest, assert_disjoint_manifests
 from paper_vqa.utils.reproducibility import make_generator, make_worker_init_fn
 
@@ -33,6 +33,7 @@ class VQADataModule:
         replay_config: Mapping[str, Any],
         processor: Any,
         trainer_config: Mapping[str, Any],
+        loss_config: Mapping[str, Any],
     ) -> None:
         """Store resolved configuration and model processor.
 
@@ -41,11 +42,13 @@ class VQADataModule:
             replay_config: Zero or more additional training source mappings.
             processor: BLIP processor used to tokenise samples.
             trainer_config: Loader and token-length settings.
+            loss_config: Decoder-target and multitask-loss settings.
         """
         self.data_config = data_config
         self.replay_config = replay_config
         self.processor = processor
         self.trainer_config = trainer_config
+        self.loss_config = loss_config
 
     def build(self, include_test: bool = False) -> DataLoaders:
         """Load train/validation and optionally frozen test partitions.
@@ -119,11 +122,15 @@ class VQADataModule:
 
     def _dataset(self, examples: Sequence[VQAExample]) -> Dataset[dict[str, Any]]:
         """Create a processor-backed dataset for one split."""
+        target_policy = str(self.loss_config.get("vqa_target_policy", "modal"))
+        if target_policy not in {"modal", "label_consistent_modal"}:
+            raise ValueError(f"unsupported training target policy: {target_policy}")
         return RecordVQADataset(
             examples=examples,
             processor=self.processor,
             max_question_length=int(self.trainer_config["max_question_length"]),
             max_answer_length=int(self.trainer_config["max_answer_length"]),
+            target_policy=cast(TrainingTargetPolicy, target_policy),
         )
 
     def _build_sampler(

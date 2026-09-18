@@ -1,5 +1,5 @@
 answerability_weight: 0.25
 vqa_loss_policy: all_examples
-vqa_target_policy: modal
-unanswerable_vqa_weight: 1.0
+vqa_target_policy: label_consistent_modal
+unanswerable_vqa_weight: 0.25
 answerability_class_weights: null

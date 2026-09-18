@@ -1,0 +1,61 @@
+program: paper-vqa-train
+name: vqa-hpo-screening-v1
+method: bayes
+metric:
+  goal: maximize
+  name: selection/answerability_ap
+parameters:
+  model:
+    values:
+      - blip_vqa_lora_r4_a4
+      - blip_vqa_lora_r4_a8
+      - blip_vqa_lora_r8_a8
+      - blip_vqa_lora_r8_a16
+      - blip_vqa_lora_r16_a16
+      - blip_vqa_lora_r16_a32
+  trainer.learning_rate:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.0003
+  trainer.weight_decay:
+    values: [0.0, 0.01, 0.05]
+  model.lora.dropout:
+    values: [0.0, 0.05, 0.10]
+  head.hidden_dim:
+    values: [128, 256, 512]
+  head.dropout:
+    values: [0.10, 0.30, 0.50]
+  trainer.warmup_ratio:
+    values: [0.03, 0.05, 0.10]
+  loss.answerability_weight:
+    values: [0.10, 0.25]
+command:
+  - ${env}
+  - uv
+  - run
+  - paper-vqa-train
+  - replay=none
+  - head=mlp
+  - experiment.name=hpo_screening
+  - data.train.max_samples=4096
+  - data.validation.max_samples=1024
+  - trainer.seed=42
+  - trainer.epochs=6
+  - trainer.batch_size=4
+  - trainer.num_workers=0
+  - trainer.cpu_threads=1
+  - trainer.checkpoint_monitor=val/answerability_ap
+  - trainer.checkpoint_mode=max
+  - trainer.early_stopping_patience=2
+  - trainer.progress.leave=false
+  - loss.vqa_loss_policy=all_examples
+  - loss.vqa_target_policy=modal
+  - loss.unanswerable_vqa_weight=1.0
+  - head.pooling=masked_mean
+  - logging.enabled=true
+  - logging.mode=online
+  - logging.group=hpo_screening
+  - logging.upload_manifests=true
+  - logging.upload_checkpoints=false
+  - logging.upload_predictions=false
+  - ${args_no_hyphens}

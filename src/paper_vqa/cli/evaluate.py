@@ -8,8 +8,14 @@ from omegaconf import DictConfig
 from paper_vqa.cli.common import resolve_device, resolved_config, write_manifests
 from paper_vqa.cli.paths import config_directory
 from paper_vqa.data.datamodule import VQADataModule
-from paper_vqa.evaluation.metrics import select_safety_threshold
-from paper_vqa.evaluation.runner import Evaluator, write_evaluation
+from paper_vqa.evaluation.policies import (
+    CalibratedThresholds,
+    calibrate_policy_thresholds,
+    compare_abstention_policies,
+    flatten_policy_metrics,
+    write_policy_comparison,
+)
+from paper_vqa.evaluation.runner import Evaluator, flatten_evaluation_metrics, write_evaluation
 from paper_vqa.models.factory import build_processor, build_vqa_model
 from paper_vqa.training.checkpoints import CheckpointManager
 from paper_vqa.training.tracker import build_tracker
@@ -25,11 +31,15 @@ def main(config: DictConfig) -> None:
     checkpoint_path = values["evaluation"]["checkpoint_path"]
     if not checkpoint_path:
         raise ValueError("Set evaluation.checkpoint_path to a checkpoint directory")
-    seed_everything(int(trainer_config["seed"]), bool(trainer_config["deterministic"]))
-    processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
-    loaders = VQADataModule(values["data"], values["replay"], processor, trainer_config).build(
-        include_test=True
+    seed_everything(
+        int(trainer_config["seed"]),
+        bool(trainer_config["deterministic"]),
+        int(trainer_config["cpu_threads"]),
     )
+    processor = build_processor(str(values["model"]["name"]), values["model"].get("revision"))
+    loaders = VQADataModule(
+        values["data"], values["replay"], processor, trainer_config, values["loss"]
+    ).build(include_test=True)
     if not loaders.test_examples:
         raise ValueError("frozen test evaluation requires a non-empty test partition")
     output_directory = Path(str(trainer_config["output_dir"])).parent
@@ -44,28 +54,52 @@ def main(config: DictConfig) -> None:
         progress_enabled=bool(progress.get("enabled", True)),
         progress_leave=bool(progress.get("leave", False)),
     )
-    configured_threshold = values["evaluation"]["threshold"]
-    if configured_threshold is not None:
-        threshold = float(configured_threshold)
-    elif model.answerability_head is None:
-        threshold = 0.0
-    else:
-        labels, scores = evaluator.calibration_scores(loaders.validation)
-        threshold = select_safety_threshold(
-            labels, scores, float(values["evaluation"]["minimum_answerable_recall"])
-        ).threshold
-    result, predictions = evaluator.evaluate_examples(
-        loaders.test_examples,
-        threshold,
+    validation_generations = evaluator.generate_examples(
+        loaders.validation_examples,
         dict(values["evaluation"]["generation"]),
-        int(values["evaluation"]["ece_bins"]),
     )
-    write_evaluation(result, predictions, output_directory / "evaluation")
+    thresholds = calibrate_policy_thresholds(
+        validation_generations,
+        float(values["evaluation"]["minimum_answerable_recall"]),
+        [float(target) for target in values["evaluation"]["matched_answerable_recall_targets"]],
+    )
+    configured_threshold = values["evaluation"]["threshold"]
+    head_threshold = (
+        float(configured_threshold) if configured_threshold is not None else thresholds.head
+    )
+    if model.answerability_head is None:
+        head_threshold = 0.0
+    if head_threshold is None:
+        raise RuntimeError("head-enabled evaluation did not produce a calibration threshold")
+    if not 0.0 <= head_threshold <= 1.0:
+        raise ValueError("evaluation.threshold must be in [0, 1]")
+    thresholds = CalibratedThresholds(
+        head=head_threshold if model.answerability_head is not None else None,
+        decoder_confidence=thresholds.decoder_confidence,
+        matched_answerable_recall=thresholds.matched_answerable_recall,
+    )
+    test_generations = evaluator.generate_examples(
+        loaders.test_examples,
+        dict(values["evaluation"]["generation"]),
+    )
+    result, predictions = evaluator.evaluate_records(
+        test_generations, head_threshold, int(values["evaluation"]["ece_bins"])
+    )
+    comparison = compare_abstention_policies(
+        test_generations,
+        thresholds,
+        int(values["evaluation"]["risk_coverage_points"]),
+    )
+    evaluation_directory = output_directory / "evaluation"
+    write_evaluation(result, predictions, evaluation_directory)
+    write_policy_comparison(comparison, evaluation_directory)
     tracker = build_tracker(values["logging"], values)
     try:
         tracker.log_artifact(output_directory / "manifests", "data-manifests", "dataset")
         tracker.log_artifact(output_directory / "evaluation", "frozen-test-results", "evaluation")
-        tracker.log({"test/vqa_accuracy": result.vqa_accuracy}, step=0)
+        metrics = flatten_evaluation_metrics(result, "test")
+        metrics.update(flatten_policy_metrics(comparison, "test"))
+        tracker.log(metrics, step=0)
     finally:
         tracker.finish()
     print(result)

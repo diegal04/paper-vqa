@@ -4,6 +4,10 @@
 
 This repository is deliberately independent from the original TFG application. It does not import code from, or modify, `mi-tfg`. The original project is used only as historical context for the research refactor described below.
 
+Experimental hypotheses, run artifacts, results, negative findings, and research decisions are
+tracked separately in [EXPERIMENTS.md](EXPERIMENTS.md). The README describes the current system
+and how to reproduce it; the experiment log explains why the current choices were made.
+
 ## Research objective
 
 Standard VQA systems always generate an answer. This is unsafe for the target use case: a blurry, occluded, wrongly framed, or otherwise unusable photo can lead to a plausible but incorrect response. The research question is therefore:
@@ -56,9 +60,11 @@ paper-vqa/
 │   ├── training/                    # objective, trainer, tracker, checkpoints
 │   ├── evaluation/                  # metrics, inference, prediction reports
 │   └── utils/                       # reproducibility and manifests
+├── sweeps/                           # versioned W&B smoke and Bayesian searches
 ├── tests/                           # unit and smoke tests
 ├── data/                            # local benchmark annotations; ignored by Git
 ├── outputs/                         # Hydra run artefacts; ignored by Git
+├── EXPERIMENTS.md                   # living experiment log and decision register
 ├── pyproject.toml
 └── uv.lock
 ```
@@ -195,13 +201,21 @@ At inference, the head runs first. For examples below the threshold, `SelectiveV
 
 ### Multitask objective
 
-The objective is:
+The original multitask objective is:
 
 ```text
 L_total = L_vqa + λ × L_answerability
 ```
 
 `λ` is `loss.answerability_weight` and defaults to 0.25. `L_answerability` is two-class cross-entropy over the head logits, but only examples with `has_answerable=True` contribute. Optional class weights are supported through `loss.answerability_class_weights`.
+
+The weighted formulation additionally separates positive and negative decoder supervision:
+
+```text
+L_total = L_vqa_answerable + β × L_vqa_unanswerable + λ × L_answerability
+```
+
+`β` is `loss.unanswerable_vqa_weight`. It controls how strongly the decoder learns the safe fallback on explicitly unanswerable records: `β=1` recovers `all_examples`, `β=0` recovers the decoder masking of `answerable_only`, and intermediate values retain fallback supervision without giving negative examples full decoder weight. Unlabelled replay examples always retain decoder weight 1 and never contribute to the answerability loss.
 
 BLIP's answer decoder is causal: the logits at position `t` predict the target token at `t + 1`. The implementation explicitly computes VQA cross-entropy as:
 
@@ -216,15 +230,24 @@ The VQA-loss policy is itself an ablation:
 | Policy | Decoder loss uses | Motivation |
 |---|---|---|
 | `all_examples` | answerable and unanswerable VizWiz examples | Lets the decoder learn the benchmark's literal `"unanswerable"` targets. |
-| `answerable_only` | only examples labelled answerable | Isolates whether any gain comes from decoder supervision on unanswerable examples rather than the head. |
+| `answerable_only` | labelled answerable examples and unlabelled replay | Isolates whether any gain comes from decoder supervision on explicitly unanswerable examples rather than the head. |
 
 The answerability head is supervised by labelled samples in both policies.
+
+Decoder targets are also configurable through `loss.vqa_target_policy`:
+
+| Target policy | Behaviour |
+|---|---|
+| `modal` | Uses the first most-frequent answer among all references; this preserves the original experimental behaviour. |
+| `label_consistent_modal` | Uses the most-frequent non-`"unanswerable"` reference for an answerable record, forces `"unanswerable"` for an unanswerable record, and preserves the modal target for unlabelled replay. |
+
+The ready-made `loss=label_consistent_weighted` group combines `label_consistent_modal`, `β=0.25`, `λ=0.25`, and the `all_examples` policy. It is an experimental candidate and does not replace the historical pilot configurations silently.
 
 ## Metrics and calibration
 
 ### VQA answer quality
 
-`official_vqa_accuracy` preserves all references and applies VQA-style normalisation: lowercasing, article removal, punctuation removal, and whitespace normalisation. For a prediction with `m` matches among `N` references, it averages the leave-one-annotator-out score over all possible held-out annotators. With ten VizWiz references this is the usual VQA consensus principle, rather than a single-reference exact match.
+`official_vqa_accuracy` preserves all references and follows the [official VQA evaluator](https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py)'s conditional normalisation: whitespace cleanup, punctuation handling, number-word mapping, article removal, lowercasing, and contraction mapping. As in the reference implementation, full normalisation is applied when the cleaned human references are not unanimous. For a prediction with `m` matches among `N` references, it averages the leave-one-annotator-out score over all possible held-out annotators. With ten VizWiz references this is the official consensus principle rather than a single-reference exact match. Parity cases cover punctuation, decimal commas, number words, contractions, unanimous references, and held-out consensus.
 
 ### Answerability and safety
 
@@ -234,14 +257,41 @@ For a head-enabled model, the primary classification metric is **average precisi
 - F1, precision, recall, specificity, and balanced accuracy at the selected threshold;
 - Brier score and equal-width expected calibration error (ECE, 15 bins by default);
 - coverage, accepted-answer VQA accuracy, selective risk, and unsafe answer rate;
+- the specific unsafe-answer rate: genuinely unanswerable questions that receive an
+  emitted answer other than the literal `"unanswerable"`;
 - VQA accuracy restricted to genuinely answerable questions, with abstentions scored as zero; and
 - the fraction of emitted answers that literally say `"unanswerable"` after VQA normalisation.
 
-`unsafe_answer_rate` is the fraction of genuinely unanswerable questions for which the system emits an answer. Lower is better. `coverage` is the fraction of all questions for which it emits an answer. `selective_risk = 1 - accepted_vqa_accuracy`. The two additional diagnostics separate useful answer quality from the benchmark reward obtained by generating the literal token `"unanswerable"`.
+`unsafe_answer_rate` is the fraction of genuinely unanswerable questions accepted by the
+answerability head. `specific_unsafe_answer_rate` uses the same denominator but excludes
+accepted outputs whose normalised text is `"unanswerable"`; it therefore isolates the cases
+in which a head error becomes a specific, potentially hallucinated response. Lower is better.
+`coverage` is the fraction of all questions for which the head emits an answer.
+`selective_risk = 1 - accepted_vqa_accuracy`. These diagnostics separate useful answer
+quality from the benchmark reward obtained by generating the literal token `"unanswerable"`.
 
 When no threshold is provided for a head-enabled development evaluation, the threshold is selected **only on validation**. Among all thresholds satisfying `evaluation.minimum_answerable_recall` (0.90 by default), the selector chooses the one with the smallest unsafe answer rate and, on ties, the largest threshold. The selected numerical threshold is model- and seed-specific; do not compare its absolute value across different models.
 
-`bootstrap_confidence_interval` and `aggregate_seed_metrics` are available as library utilities for paper reporting. They are not yet exposed as a standalone aggregation or plotting CLI, and PR/ROC figures and confusion-matrix figures are not automatically written by the current evaluator.
+### Formal abstention policies
+
+Scientific evaluation generates each answer exactly once and then applies every selection policy to that same output. This avoids attributing decoding differences to the selector:
+
+| Policy | Emits an answer when |
+|---|---|
+| `always_answer` | Always; this is the non-selective VQA reference. |
+| `decoder_literal` | The decoded answer is not the normalised literal `"unanswerable"`. |
+| `decoder_confidence` | The geometric mean generated-token probability exceeds its validation-calibrated threshold. |
+| `decoder_confidence_plus_literal` | Decoder confidence accepts and the decoded answer is not literal `"unanswerable"`. |
+| `head_only` | The auxiliary head score exceeds its validation-calibrated threshold. |
+| `hybrid` | The head accepts and the decoder does not output literal `"unanswerable"`. |
+
+The head and decoder-confidence thresholds are calibrated independently on validation under the same answerable-recall constraint. Frozen-test evaluation first generates the validation partition to fix both thresholds, then applies those unchanged thresholds to test. It never calibrates decoder confidence on test.
+
+For a fair safety comparison after textual abstention, Hydra also declares fixed answerable-emission recall targets in `evaluation.matched_answerable_recall_targets`. Decoder-confidence-plus-literal and hybrid thresholds are calibrated independently on validation to reach each target. `matched_answerable_recall.csv` then compares their achieved recall, coverage, specific unsafe rate, emission answerability precision, accepted VQA, and exact counts. Frozen-test evaluation transports these validation thresholds unchanged.
+
+`policy_metrics.json` records every operating point and the matched-recall table. `risk_coverage.csv` and `risk_coverage.svg` contain confidence sweeps for decoder confidence, decoder-confidence-plus-literal, head-only selection, and the hybrid system. The SVG is generated without an additional plotting dependency and the CSV is the source for later paper figures. `evaluation.risk_coverage_points` controls the maximum number of deterministic curve points.
+
+`bootstrap_confidence_interval` and `aggregate_seed_metrics` remain available as library utilities. A standalone multi-run aggregation command, PR/ROC figures, reliability diagrams, and confusion-matrix figures remain future reporting work.
 
 ## Configuration and reproducibility
 
@@ -259,21 +309,45 @@ uv run paper-vqa-train replay=both replay.sources.0.max_samples=3000
 uv run paper-vqa-train head.pooling=cls
 ```
 
+When `trainer.warmup_ratio` is not `null`, it takes precedence over `trainer.warmup_steps` and scales the warmup with the planned number of optimizer updates. This is the preferred setting for convergence, full-data, and hyperparameter-search runs because an absolute step count changes meaning with dataset size and epoch ceiling. The end-of-epoch learning rate is stored in both `history.json` and W&B.
+
 The run layout is:
 
 ```text
 outputs/<experiment-name>/<timestamp>/seed_<seed>/
 ├── .hydra/                    # resolved Hydra configuration and overrides
 ├── manifests/                 # exact source records used
+├── history.json               # local train/validation metrics after every epoch
 ├── checkpoint/
-│   ├── model.safetensors       # best model weights; no pickle
+│   ├── model.safetensors       # best trainable LoRA + head weights; no pickle
 │   └── metadata.json           # selected epoch, monitor, config
 └── development_evaluation/ or evaluation/
     ├── metrics.json
-    └── predictions.json        # score, abstention, references, label
+    ├── predictions.json        # raw generation, both scores, decision, references
+    ├── policy_metrics.json     # every fixed abstention-policy operating point
+    ├── matched_answerable_recall.csv # policy comparison at fixed useful recall
+    ├── risk_coverage.csv       # long-form curve data
+    └── risk_coverage.svg       # vector figure
 ```
 
-`seed_everything` seeds Python, NumPy, PyTorch, CUDA, DataLoader generators, and worker initialisers. It disables cuDNN benchmarking, requests deterministic algorithms with warnings for unsupported kernels, and sets `CUBLAS_WORKSPACE_CONFIG`. Exact bitwise reproducibility can still depend on hardware, CUDA, and third-party kernels; record the generated configuration and dependency lockfile with every reported run.
+New checkpoints store only trainable parameters. The frozen BLIP base is reconstructed from the
+model identifier and immutable revision in `metadata.json`; the LoRA adapters and answerability
+head are then restored from `model.safetensors`. For the current rank-8 model this reduces a
+checkpoint from roughly 1.4 GB to 5.6 MB. The loader remains compatible with earlier full-model
+checkpoints (`format_version=1`).
+
+Policy reports can be rebuilt from saved validation predictions without loading BLIP or decoding
+the images again. The command is deliberately restricted to validation so it cannot recalibrate
+thresholds on frozen test predictions:
+
+```bash
+uv run paper-vqa-report-development-policies \
+  policy_report.predictions_path=outputs/<run>/seed_42/development_evaluation/predictions.json \
+  policy_report.output_dir=outputs/<run>/seed_42/development_evaluation/policy_report_v2 \
+  logging.enabled=false
+```
+
+`seed_everything` seeds Python, NumPy, PyTorch, CUDA, DataLoader generators, and worker initialisers. It disables cuDNN benchmarking, requests deterministic algorithms with warnings for unsupported kernels, sets `CUBLAS_WORKSPACE_CONFIG`, and disables Hugging Face Tokenizers' internal Rayon pool through `TOKENIZERS_PARALLELISM=false`. It also applies `trainer.cpu_threads` to OpenMP, MKL, OpenBLAS, NumExpr, and PyTorch thread pools; the default of one avoids oversubscription on the university server while GPU computation remains unaffected. Exact bitwise reproducibility can still depend on hardware, CUDA, and third-party kernels; record the generated configuration and dependency lockfile with every reported run.
 
 ## Commands
 
@@ -346,7 +420,29 @@ uv run paper-vqa-train \
   logging.enabled=false
 ```
 
-The terminal shows separate training and validation progress bars, running loss, generation loss, and an epoch summary. The `val/answerability_ap` metric is logged during head-enabled training and can be used for checkpoint selection. Set `trainer.progress.enabled=false` to hide bars.
+The terminal shows separate training and validation progress bars, running loss, generation loss, and an epoch summary. The `val/answerability_ap` metric is logged during head-enabled training and can be used for checkpoint selection. Set `trainer.progress.enabled=false` to hide bars. Every completed epoch is also written atomically to `history.json`, including the global step, all train/validation losses, answerability AP, and whether that epoch selected the checkpoint. This local record is always created, even when W&B is disabled.
+
+### Train the label-consistent weighted candidate
+
+This candidate prevents an officially answerable record from using `"unanswerable"` as its decoder target, while retaining a down-weighted safe fallback for explicitly unanswerable records:
+
+```bash
+uv run paper-vqa-train \
+  head=mlp \
+  loss=label_consistent_weighted \
+  experiment.name=label_consistent_beta025_pilot \
+  data.train.max_samples=2048 \
+  data.validation.max_samples=512 \
+  trainer.epochs=3 \
+  trainer.batch_size=4 \
+  trainer.num_workers=0 \
+  trainer.checkpoint_monitor=val/answerability_ap \
+  trainer.checkpoint_mode=max \
+  trainer.progress.leave=true \
+  logging.enabled=false
+```
+
+Override `loss.unanswerable_vqa_weight` to ablate β without changing target selection or λ.
 
 ### Development evaluation on validation
 
@@ -363,7 +459,7 @@ uv run paper-vqa-evaluate-development \
   logging.enabled=false
 ```
 
-Evaluate a head-enabled checkpoint. Omitting `development.threshold` triggers validation-only calibration under the configured recall constraint:
+Evaluate a head-enabled checkpoint. Omitting `development.threshold` triggers validation-only calibration under the configured recall constraint. The command generates once per example and writes the six-policy comparison, matched-recall table, and risk--coverage outputs:
 
 ```bash
 uv run paper-vqa-evaluate-development \
@@ -419,33 +515,110 @@ Each run writes separate checkpoints and manifests under `multirun/`. Evaluate s
 
 ### Weights & Biases
 
-W&B is disabled by default. Enable it for a remote or local experiment record:
+W&B is disabled by default. First validate the integration in offline mode, which does not send the run to the service:
 
 ```bash
 uv run paper-vqa-train \
+  experiment.name=wandb_offline_smoke \
+  data.train.max_samples=16 \
+  data.validation.max_samples=8 \
+  trainer.epochs=1 \
+  trainer.batch_size=4 \
+  trainer.num_workers=0 \
+  trainer.warmup_steps=0 \
+  trainer.checkpoint_monitor=val/answerability_ap \
+  trainer.checkpoint_mode=max \
+  logging.enabled=true \
+  logging.mode=offline \
+  logging.group=setup
+```
+
+The W&B offline files are kept inside that Hydra run directory. To use the online dashboard and Sweeps, create a W&B account and log in locally. Keep the API key outside the repository:
+
+```bash
+uv run wandb login
+```
+
+After inspecting the offline smoke run and logging in, repeat it online:
+
+```bash
+uv run paper-vqa-train \
+  experiment.name=wandb_online_smoke \
+  data.train.max_samples=16 \
+  data.validation.max_samples=8 \
+  trainer.epochs=1 \
+  trainer.batch_size=4 \
+  trainer.num_workers=0 \
+  trainer.warmup_steps=0 \
+  trainer.checkpoint_monitor=val/answerability_ap \
+  trainer.checkpoint_mode=max \
   logging.enabled=true \
   logging.mode=online \
   logging.project=paper-vqa \
-  logging.entity=<your-wandb-entity> \
-  logging.group=pilot
+  logging.entity=YOUR_WANDB_ENTITY \
+  logging.group=setup
 ```
 
-Use `logging.mode=offline` if the machine has no network connection. The tracker stores the resolved configuration in the W&B run and logs epoch scalar metrics. It uploads manifests, selected checkpoints, and evaluation directories as W&B artifacts when enabled. Hyperparameter sweeps can invoke the same Hydra overrides, for example over `loss.answerability_weight`, `head.pooling`, replay weights, or replay sample budgets.
+Runs have the stable display name `<experiment.name>-seed_<trainer.seed>`. Use `logging.group` to collect related runs, for example `convergence`, `hpo`, `full-data`, `replay`, or `final-5seeds`. Training logs all available epoch scalars and development/final evaluation commands log every available VQA, answerability, calibration, and selective metric rather than only VQA accuracy. Whenever validation selects a new checkpoint, training also logs `selection/*`; consequently `selection/answerability_ap` remains the AP of the final selected checkpoint rather than the AP of the last, potentially overfitted epoch.
 
-## Current pilot evidence
+Artifact upload is deliberately conservative:
 
-The following figures are useful pipeline checks, not paper results. They all use one seed, 2,048 VizWiz training records, and the same deterministic 512-example VizWiz validation subset.
-
-| Configuration | VQA Accuracy | Notes |
+| Setting | Default | Uploaded content |
 |---|---:|---|
-| Frozen BLIP-VQA baseline | 0.2023 | No LoRA, no head |
-| LoRA VQA only | 0.5723 | No abstention |
-| LoRA + head, `all_examples`, threshold 0 | 0.5686 | Decoder quality control; no abstention |
-| LoRA + head, `answerable_only`, threshold 0 | 0.4924 | Decoder policy ablation; no abstention |
-| LoRA + head, `all_examples`, calibrated | 0.3139 | Coverage 0.7090, AP 0.9346, AUROC 0.8781, unsafe rate 0.3446 |
-| LoRA + head, `answerable_only`, calibrated | 0.2828 | Coverage 0.7129, AP 0.9300, AUROC 0.8703, unsafe rate 0.3559 |
+| `logging.upload_manifests` | `true` | Exact dataset manifests and provenance |
+| `logging.upload_checkpoints` | `false` | The final validation-selected checkpoint, considered only once after training |
+| `logging.upload_predictions` | `false` | Evaluation directories, including per-example predictions |
 
-This pilot suggests that `all_examples` is the stronger starting policy under the current settings. It does **not** establish a publishable improvement: no replay ablation, loss-weight sweep, pooling ablation, confidence interval, or five-seed analysis has yet been completed.
+Checkpoint upload remains disabled during searches even though new adapter-plus-head checkpoints are compact (approximately 5.6 MB for rank 8). Prediction files contain dataset-derived questions, references, and model outputs and must not be uploaded casually. Metrics, Hydra configuration, local checkpoints, local predictions, and `history.json` remain available regardless of those upload switches. An offline run can later be uploaded with `uv run wandb sync <offline-run-directory>`.
+
+### Bounded W&B hyperparameter search
+
+The versioned sweep keeps the already selected scientific choices fixed: no replay,
+`masked_mean`, modal targets, decoder supervision on all examples, and full weight for
+unanswerable decoder examples. It searches learning rate, weight decay, LoRA rank and
+alpha-to-rank ratio, LoRA dropout, head width and dropout, proportional warmup, and
+`lambda ∈ {0.10, 0.25}`. Screening uses seed 42, 4,096 train examples, 1,024 validation examples,
+a six-epoch ceiling, and validation-AP early stopping. W&B optimises
+`selection/answerability_ap`, the AP attached to the saved best checkpoint.
+
+First create and execute the one-run integration smoke:
+
+```bash
+uv run wandb sweep \
+  --entity YOUR_WANDB_ENTITY \
+  --project paper-vqa \
+  sweeps/hpo_smoke.yaml
+
+uv run wandb agent --count 1 YOUR_WANDB_ENTITY/paper-vqa/SMOKE_SWEEP_ID
+```
+
+After verifying that the smoke finishes, that `selection/answerability_ap` appears in W&B, and
+that its local checkpoint metadata declares `weights_scope: trainable`, create the Bayesian
+screening sweep:
+
+```bash
+uv run wandb sweep \
+  --entity YOUR_WANDB_ENTITY \
+  --project paper-vqa \
+  sweeps/hpo_screening.yaml
+
+# Run three trials first and inspect them before committing the remaining budget.
+uv run wandb agent --count 3 YOUR_WANDB_ENTITY/paper-vqa/SCREENING_SWEEP_ID
+
+# Continue the same sweep after the three-run gate passes (24 total trials).
+uv run wandb agent --count 21 YOUR_WANDB_ENTITY/paper-vqa/SCREENING_SWEEP_ID
+```
+
+Random and Bayesian W&B agents do not stop by themselves, so `--count` is mandatory. The sweep
+optimises AP only as a cheap screening signal; it does not declare the winner. The leading
+checkpoints must subsequently be generated over validation and selected from a Pareto comparison
+of AP, specific unsafe rate at matched answerable recall, answerable VQA, and calibration.
+
+## Experiment history
+
+The README intentionally does not duplicate changing result tables. See
+[EXPERIMENTS.md](EXPERIMENTS.md) for the chronological experiment record, comparable pilot
+tables, invalid-run diagnoses, negative results, current decisions, and planned studies.
 
 ## What changed relative to the TFG
 
@@ -480,7 +653,7 @@ The explicit next-token implementation also corrects an important training issue
 |---|---|
 | Development focused on loss, response-classification accuracy, qualitative examples, and simplified VQA comparisons. | VQA references are preserved and scored with official-style leave-one-annotator-out consensus. |
 | A single response-classification accuracy can conceal imbalance, ranking quality, calibration, and safety trade-offs. | AP is primary; AUROC, F1, precision, recall, specificity, balanced accuracy, Brier, and ECE are reported. |
-| A score alone did not define a safe selective policy. | Coverage, accepted VQA accuracy, selective risk, and unsafe answer rate quantify the cost and benefit of abstention. |
+| A score alone did not define a safe selective policy. | Coverage, accepted VQA accuracy, selective risk, unsafe answer rate, and specific unsafe-answer rate quantify the cost and benefit of abstention while separating textual abstentions from specific responses. |
 | Checkpoint choices and artefacts were managed manually. | Validation-only checkpoint monitoring, early stopping, `safetensors` weights, JSON metadata, predictions with references, manifests, and optional W&B artifacts are automatic. |
 
 One subtle but important point: VizWiz can reward a generated literal answer such as `"unanswerable"` through the VQA references, while a deployed selective system should often abstain instead. For this reason, raw VQA accuracy, calibrated selective VQA metrics, and answerability metrics must all be reported together. None alone describes the safety of the system.

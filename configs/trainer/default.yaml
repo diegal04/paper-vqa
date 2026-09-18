@@ -1,6 +1,7 @@
 seed: 42
 deterministic: true
 device: auto
+cpu_threads: 1
 batch_size: 4
 num_workers: 4
 pin_memory: true
@@ -11,6 +12,7 @@ learning_rate: 0.0002
 weight_decay: 0.01
 scheduler: linear
 warmup_steps: 200
+warmup_ratio: null
 max_grad_norm: 1.0
 checkpoint_monitor: val/answerability_ap
 checkpoint_mode: max
